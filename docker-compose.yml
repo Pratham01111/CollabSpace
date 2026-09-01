@@ -1,0 +1,20 @@
+services:
+  db:
+    image: postgres:17
+    container_name: collabspace-db
+    environment:
+      POSTGRES_USER: collabspace
+      POSTGRES_PASSWORD: collabspace
+      POSTGRES_DB: collabspace
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U collabspace -d collabspace"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  pgdata:
