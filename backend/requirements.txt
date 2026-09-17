@@ -6,3 +6,8 @@ SQLAlchemy==2.0.52
 alembic==1.19.1
 psycopg[binary]==3.2.13
 pydantic-settings==2.7.1
+
+# Phase 3 — authentication
+PyJWT==2.14.0
+bcrypt==5.0.0
+email-validator==2.3.0

@@ -4,6 +4,7 @@ A real-time collaborative workspace. Built in phases.
 
 - **Phase 1 — Project setup:** FastAPI backend and Vite/React frontend running independently, frontend calling `GET /health`.
 - **Phase 2 — Database:** PostgreSQL, SQLAlchemy models, Alembic migrations. No API routes, no auth yet.
+- **Phase 3 — Authentication:** register, login, and a JWT-protected `/auth/me`. No workspace or task routes yet.
 
 ## Database
 
@@ -59,6 +60,37 @@ uvicorn app.main:app --reload --port 8000
 
 - `GET /health` → `{"status": "ok"}`
 - Docs at http://localhost:8000/docs
+
+`backend/.env` needs a `JWT_SECRET_KEY`. There is deliberately no default, so the
+app refuses to start without one rather than signing tokens with a value that is
+public knowledge:
+
+```bash
+python -c "import secrets; print(secrets.token_urlsafe(48))"
+```
+
+### Authentication
+
+| Endpoint | Purpose |
+| --- | --- |
+| `POST /auth/register` | email + password → 201 with the new user (409 if taken) |
+| `POST /auth/login` | email + password → `access_token` (401 on bad credentials) |
+| `GET /auth/me` | requires `Authorization: Bearer <token>` → the current user |
+
+```bash
+curl -X POST localhost:8000/auth/register -H 'Content-Type: application/json' \
+  -d '{"email":"you@example.com","password":"a-good-password"}'
+
+TOKEN=$(curl -s -X POST localhost:8000/auth/login -H 'Content-Type: application/json' \
+  -d '{"email":"you@example.com","password":"a-good-password"}' | python3 -c 'import json,sys;print(json.load(sys.stdin)["access_token"])')
+
+curl localhost:8000/auth/me -H "Authorization: Bearer $TOKEN"
+```
+
+Passwords are hashed with bcrypt and never stored or returned in plaintext.
+Tokens are HS256, expire after `ACCESS_TOKEN_EXPIRE_MINUTES`, and carry only the
+user id in `sub`. There is no refresh token or logout yet — a token is valid
+until it expires.
 
 ## Frontend
 
