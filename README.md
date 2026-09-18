@@ -5,7 +5,8 @@ A real-time collaborative workspace. Built in phases.
 - **Phase 1 — Project setup:** FastAPI backend and Vite/React frontend running independently, frontend calling `GET /health`.
 - **Phase 2 — Database:** PostgreSQL, SQLAlchemy models, Alembic migrations. No API routes, no auth yet.
 - **Phase 3 — Authentication:** register, login, and a JWT-protected `/auth/me`.
-- **Phase 4 — Workspaces:** create/list/read workspaces and manage membership. No task routes yet.
+- **Phase 4 — Workspaces:** create/list/read workspaces and manage membership.
+- **Phase 5 — Tasks:** board CRUD scoped to a workspace. No comments, WebSockets, or concurrency checks yet.
 
 ## Database
 
@@ -120,6 +121,32 @@ Role rules:
 A workspace the caller is not a member of returns **404, not 403** — a 403 would
 confirm that it exists. A non-existent workspace and someone else's workspace are
 indistinguishable from the outside.
+
+### Tasks
+
+| Endpoint | Notes |
+| --- | --- |
+| `GET /workspaces/{id}/tasks` | members only; ordered by status then position |
+| `POST /workspaces/{id}/tasks` | members only; `created_by` comes from the token |
+| `PATCH /tasks/{id}` | partial update; any member of the task's workspace |
+| `DELETE /tasks/{id}` | any member of the task's workspace |
+
+Statuses are `TODO`, `IN_PROGRESS`, `DONE`. A task in a workspace the caller does
+not belong to returns 404, exactly as the workspace routes do.
+
+`position` orders cards within one status column, and columns are numbered
+independently. Omit it on create and the card is appended to the bottom of its
+column; change `status` without sending a `position` and the card lands at the
+bottom of the column it moved into. It is a float so that dropping a card between
+two others is a single write at the midpoint rather than a renumber of everything
+below it.
+
+`created_by`, `version`, `workspace_id` and the timestamps are server-owned.
+Sending any of them in a request body is a 422 rather than a silent no-op, so a
+client bug surfaces immediately.
+
+`version` increments on every update that changes something. Nothing checks it
+yet — the 409-on-stale-write comparison arrives in Phase 10.
 
 Passwords are hashed with bcrypt and never stored or returned in plaintext.
 Tokens are HS256, expire after `ACCESS_TOKEN_EXPIRE_MINUTES`, and carry only the
