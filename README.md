@@ -4,7 +4,8 @@ A real-time collaborative workspace. Built in phases.
 
 - **Phase 1 — Project setup:** FastAPI backend and Vite/React frontend running independently, frontend calling `GET /health`.
 - **Phase 2 — Database:** PostgreSQL, SQLAlchemy models, Alembic migrations. No API routes, no auth yet.
-- **Phase 3 — Authentication:** register, login, and a JWT-protected `/auth/me`. No workspace or task routes yet.
+- **Phase 3 — Authentication:** register, login, and a JWT-protected `/auth/me`.
+- **Phase 4 — Workspaces:** create/list/read workspaces and manage membership. No task routes yet.
 
 ## Database
 
@@ -86,6 +87,36 @@ TOKEN=$(curl -s -X POST localhost:8000/auth/login -H 'Content-Type: application/
 
 curl localhost:8000/auth/me -H "Authorization: Bearer $TOKEN"
 ```
+
+### Workspaces
+
+Every route below requires `Authorization: Bearer <token>`.
+
+| Endpoint | Who can call it |
+| --- | --- |
+| `POST /workspaces` | any signed-in user; the creator becomes `OWNER` |
+| `GET /workspaces` | returns only the caller's own workspaces |
+| `GET /workspaces/{id}` | members only |
+| `POST /workspaces/{id}/members` | owner or admin |
+| `DELETE /workspaces/{id}/members/{user_id}` | owner or admin |
+
+Add a member by `user_id` or by `email` (exactly one):
+
+```bash
+curl -X POST localhost:8000/workspaces/1/members \
+  -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+  -d '{"email":"teammate@example.com","role":"MEMBER"}'
+```
+
+Role rules:
+
+- Owners and admins can add and remove members.
+- Only an owner can grant `ADMIN` or `OWNER`, and only an owner can remove another owner.
+- The last owner cannot be removed, so a workspace is never left unadministered.
+
+A workspace the caller is not a member of returns **404, not 403** — a 403 would
+confirm that it exists. A non-existent workspace and someone else's workspace are
+indistinguishable from the outside.
 
 Passwords are hashed with bcrypt and never stored or returned in plaintext.
 Tokens are HS256, expire after `ACCESS_TOKEN_EXPIRE_MINUTES`, and carry only the
