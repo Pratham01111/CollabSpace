@@ -124,6 +124,20 @@ def add_member(
     return membership
 
 
+def leave_workspace(db: Session, membership: WorkspaceMember) -> None:
+    """Remove the caller's own membership.
+
+    Any member may leave regardless of role; the only bar is the same one that
+    applies to removing someone else — the last owner cannot go, or the
+    workspace is left with nobody able to administer it.
+    """
+    if membership.role is WorkspaceRole.OWNER and _count_owners(db, membership.workspace_id) <= 1:
+        raise LastOwnerError
+
+    db.delete(membership)
+    db.commit()
+
+
 def remove_member(
     db: Session,
     workspace_id: int,

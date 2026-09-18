@@ -104,6 +104,23 @@ def add_member(
     return _member_response(membership)
 
 
+# Registered before the /{user_id} route below on purpose. Route matching is
+# ordered, and "/members/{user_id}" would match the literal path "/members/me"
+# first and then fail int conversion with a 422 — it does not fall through.
+@router.delete("/{workspace_id}/members/me", status_code=status.HTTP_204_NO_CONTENT)
+def leave_workspace(membership: CurrentMembership, db: DbSession) -> Response:
+    """Leave a workspace. Open to any member, whatever their role."""
+    try:
+        service.leave_workspace(db, membership)
+    except service.LastOwnerError:
+        raise HTTPException(
+            status.HTTP_409_CONFLICT,
+            "You are the last owner. Promote another member to owner before leaving.",
+        ) from None
+
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
 @router.delete("/{workspace_id}/members/{user_id}", status_code=status.HTTP_204_NO_CONTENT)
 def remove_member(
     user_id: Annotated[int, Path(ge=1)],

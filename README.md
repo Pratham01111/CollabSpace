@@ -99,6 +99,7 @@ Every route below requires `Authorization: Bearer <token>`.
 | `GET /workspaces/{id}` | members only |
 | `POST /workspaces/{id}/members` | owner or admin |
 | `DELETE /workspaces/{id}/members/{user_id}` | owner or admin |
+| `DELETE /workspaces/{id}/members/me` | any member, to leave |
 
 Add a member by `user_id` or by `email` (exactly one):
 
@@ -113,6 +114,8 @@ Role rules:
 - Owners and admins can add and remove members.
 - Only an owner can grant `ADMIN` or `OWNER`, and only an owner can remove another owner.
 - The last owner cannot be removed, so a workspace is never left unadministered.
+- Any member can leave via `.../members/me`, whatever their role. The last-owner
+  rule still applies: promote someone else to owner first, or the request is a 409.
 
 A workspace the caller is not a member of returns **404, not 403** — a 403 would
 confirm that it exists. A non-existent workspace and someone else's workspace are
