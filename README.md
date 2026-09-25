@@ -6,7 +6,8 @@ A real-time collaborative workspace. Built in phases.
 - **Phase 2 — Database:** PostgreSQL, SQLAlchemy models, Alembic migrations. No API routes, no auth yet.
 - **Phase 3 — Authentication:** register, login, and a JWT-protected `/auth/me`.
 - **Phase 4 — Workspaces:** create/list/read workspaces and manage membership.
-- **Phase 5 — Tasks:** board CRUD scoped to a workspace. No comments, WebSockets, or concurrency checks yet.
+- **Phase 5 — Tasks:** board CRUD scoped to a workspace.
+- **Phase 6 — Frontend:** login, workspace dashboard, and a Kanban board. No WebSockets yet.
 
 ## Database
 
@@ -161,5 +162,49 @@ npm install
 npm run dev
 ```
 
-Runs on http://localhost:5173 and calls the backend's `/health` on load.
-The API base URL comes from `VITE_API_BASE_URL` in `frontend/.env`.
+Runs on http://localhost:5173. The API base URL comes from `VITE_API_BASE_URL`
+in `frontend/.env`.
+
+### Screens
+
+| Route | What it does |
+| --- | --- |
+| `/login` | log in or create an account; redirects to the dashboard on success |
+| `/workspaces` | "My Workspaces" list + create |
+| `/workspaces/:id` | Kanban board: TODO / IN PROGRESS / DONE |
+
+The dashboard and board are behind a route guard, so a logged-out visitor is sent
+to `/login` and returned to wherever they were headed after signing in. The token
+lives in `localStorage`; a 401 from any request other than a login attempt clears
+it and drops you back to the login page.
+
+Cards show the title and "Created by <name>". The API stores `created_by` as a
+user id, so the name is resolved client-side from the member list that
+`GET /workspaces/{id}` already returns — no extra endpoint needed.
+
+Drag a card between columns, or change its status in the detail view; either way
+it is a `PATCH /tasks/{id}`. The detail view also edits the title and
+description, and deletes the task behind a confirm step.
+
+Comments are **UI only** — they live in browser state and disappear on reload.
+The backend for them arrives in Phase 9, and the panel says so on screen.
+
+### Guest mode (temporary)
+
+The login page offers **Continue as guest**, which provisions a throwaway account
+through the real API and seeds it with a demo workspace and four tasks, so the UI
+can be looked at without signing up.
+
+It is a development convenience, not a shared demo login:
+
+- Each browser gets its own randomly generated account, so there is no fixed
+  credential for anyone who finds the deployment, and one guest cannot see
+  another's board.
+- The data is real — it is written to Postgres like any other account's.
+- It is enabled automatically in `npm run dev`. A production build has to opt in
+  with `VITE_ENABLE_GUEST=true`.
+- Credentials are kept in `localStorage`, so returning as a guest resumes the
+  same sandbox. Clear site data to start fresh.
+
+Remove the button by dropping the `isGuestEnabled()` block in
+`src/pages/Login.jsx` when it is no longer wanted.
