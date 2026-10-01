@@ -2,487 +2,446 @@
 
 [![CI](https://github.com/Pratham01111/CollabSpace/actions/workflows/ci.yml/badge.svg)](https://github.com/Pratham01111/CollabSpace/actions/workflows/ci.yml)
 
-A real-time collaborative workspace. Built in phases.
+A real-time collaborative Kanban workspace. Teams share boards, edit tasks and
+comment, and every change appears on everyone's screen as it happens. Two people
+editing the same task at once never silently overwrite each other.
 
-## Quick start (Docker)
+## Live Demo
+
+> _Coming soon — link to the deployed app._
+
+## Screenshots
+
+> _Coming soon._
+>
+> | Board | Task detail | Mobile |
+> | --- | --- | --- |
+> | `docs/screenshots/board.png` | `docs/screenshots/task.png` | `docs/screenshots/mobile.png` |
+
+## Features
+
+- **Accounts:** register and log in with email and password. Passwords are hashed
+  with bcrypt, and sessions use JWT bearer tokens.
+- **Workspaces and roles:** OWNER, ADMIN and MEMBER, with rules for who may add or
+  remove people and grant roles. A workspace always keeps at least one owner.
+- **Private by default:** a workspace you don't belong to, and everything in it,
+  returns 404. A 403 would confirm that it exists.
+- **Kanban board:** TODO / IN PROGRESS / DONE. Create, edit, delete, and drag
+  between columns.
+- **Comments:** each task has a comment thread.
+- **Real-time sync:** task changes and comments reach every open board over
+  WebSockets, without reloading.
+- **Presence:** "Online now" and "*N* users online", correct across several tabs
+  and several servers.
+- **Conflict-safe editing:** optimistic concurrency control. A stale edit is
+  refused with a 409 and the latest version, never written over someone else's.
+- **Resilient connection:** reconnects with backoff and resyncs after a server
+  restart or network drop. The UI shows Connected / Reconnecting… / Offline.
+- **Horizontally scalable:** several backend processes or servers share events
+  and presence through Redis pub/sub.
+- **Production basics:** one error format everywhere, structured JSON logs with
+  request ids, input bounds, a 503 when the database is down, and loading, error
+  and empty states. The UI works at phone width.
+- **Tooling:** one-command Docker setup, about 210 backend tests, and CI on every
+  push.
+
+## Tech Stack
+
+| Layer | Technology |
+| --- | --- |
+| Frontend | React 18, React Router, Vite, Axios, plain CSS |
+| Backend | Python 3.14, FastAPI, Uvicorn, Pydantic |
+| Database | PostgreSQL 17, SQLAlchemy 2.0, Alembic |
+| Real-time | WebSockets (Starlette), Redis 7 pub/sub |
+| Auth | JWT (PyJWT, HS256), bcrypt |
+| Infrastructure | Docker, Docker Compose, nginx |
+| Testing / CI | pytest, httpx TestClient, GitHub Actions |
+
+## Architecture
+
+```mermaid
+flowchart LR
+    subgraph Browser
+        UI["React SPA<br/>(board, comments, presence)"]
+    end
+
+    subgraph frontend["frontend container"]
+        NGINX["nginx<br/>static files + /api proxy"]
+    end
+
+    subgraph backend["backend container (N workers)"]
+        API["FastAPI REST<br/>/auth /workspaces /tasks"]
+        WS["WebSocket<br/>/ws/workspaces/{id}"]
+        BUS["Event bus<br/>+ presence"]
+    end
+
+    PG[("PostgreSQL<br/>source of truth")]
+    RD[("Redis<br/>pub/sub + presence")]
+
+    UI -- "HTTPS /api/*" --> NGINX
+    UI <-. "WebSocket /api/ws/*" .-> NGINX
+    NGINX --> API
+    NGINX <-.-> WS
+    API -- "read / write" --> PG
+    API -- "after commit: publish" --> BUS
+    BUS <-- "workspace:{id}" --> RD
+    BUS -- "deliver to local sockets" --> WS
+```
+
+- **The browser only talks to nginx.** nginx serves the built app and proxies
+  `/api/*`, the WebSocket included, to the backend. There is one origin, so no
+  CORS, and no backend address is built into the JavaScript.
+- **PostgreSQL is the only source of truth.** Redis carries messages and
+  short-lived presence data between backend processes, and persists nothing.
+- **Every backend process holds only its own sockets.** Events go through Redis,
+  so a change handled by one process reaches users connected to any other.
+
+## How It Works
+
+**HTTP is for doing things; the WebSocket is for hearing about them.**
+
+1. **Reads and writes go over REST.** The client calls e.g.
+   `PATCH /api/tasks/42` with a bearer token. FastAPI checks the token and the
+   caller's membership, validates the body, and writes to Postgres.
+2. **The event goes out only after the commit.** The route queues the broadcast
+   as a background task. FastAPI runs background tasks only after the handler
+   succeeds, so a rejected request or a failed commit never produces an event,
+   and clients never see state that isn't in the database.
+3. **Fan-out goes through Redis.** The event is published on `workspace:{id}`.
+   Every backend process is subscribed and forwards it to its own connected
+   sockets for that workspace, including the process that published it. That
+   gives one delivery path, so there are no duplicates.
+4. **The client applies events to local state.** It has a socket open at
+   `/ws/workspaces/{id}?token=…`, and a `switch` on `event.type` adds, replaces
+   or removes the task or comment, with no refetch:
+   - The same change can arrive twice (your own REST response plus the
+     broadcast), so updates are de-duplicated by id.
+   - An older `version` never overwrites a newer one.
+5. **Reconnects resync.** When the socket drops (server restart, network loss),
+   the client retries with jittered backoff: 1s, 2s, 4s … capped at 30s, six
+   attempts, then Offline with a Retry button. Events sent during the gap are
+   lost, so every reconnect re-reads the board over REST once.
+6. **Presence.** Each server records which users it has connected in a Redis
+   sorted set, refreshed by a heartbeat. `USER_JOINED` fires on someone's first
+   connection anywhere, and `USER_LEFT` when their last one closes. If a server
+   crashes, its users expire and are announced as gone.
+
+## Concurrency
+
+Two people open the same task (version 4), and both edit it. Without a check,
+whoever saves second silently erases the first person's change. CollabSpace uses
+**version-based optimistic concurrency control**:
+
+- Every task has a `version`. Every update must say which version it was based on:
+
+  ```http
+  PATCH /tasks/42
+  {"status": "DONE", "expected_version": 4}
+  ```
+
+- If the task is still at version 4, the update applies, `version` becomes 5, and
+  `TASK_UPDATED` is broadcast.
+- If someone got there first, the response is **409 Conflict**. Nothing is written
+  or broadcast, and the body carries the task as it is now (`current_task`). The
+  UI shows *"This task was updated by someone else — showing the latest
+  version"*, loads that version into the form, and lets you redo the edit. There
+  is no automatic merging.
+
+**The check is part of the write itself, so it can't race:**
+
+```sql
+UPDATE tasks SET ..., version = version + 1
+WHERE id = :id AND version = :expected_version
+```
+
+A "read the version, compare, then write" approach would let two simultaneous
+requests both pass the comparison. With the condition inside the `UPDATE`,
+Postgres makes the second writer wait for the first to commit, then re-checks
+the `WHERE` against the new row. It no longer matches, zero rows change, and the
+second request gets a 409. The tests show this with eight truly concurrent
+writers: exactly one succeeds. They also fail if the version condition is removed.
+
+**On the client:**
+
+- The form sends the version it was **loaded with**, not the live one. Otherwise
+  an edit started before a teammate's save would quietly win.
+- While someone else's save is pending against your unsaved edits, the form warns
+  you that saving will be refused.
+
+## Running Locally
+
+### Everything in Docker (recommended)
 
 ```bash
 cp .env.example .env
 docker compose up --build
 ```
 
-Open http://localhost:8080. That runs everything: Postgres, Redis, the backend
-(migrations are applied on startup) and the frontend. API docs are at
-http://localhost:8000/docs.
+| What | Where |
+| --- | --- |
+| App | http://localhost:8080 |
+| API docs (Swagger) | http://localhost:8000/docs |
 
-| Service | Image | Notes |
-| --- | --- | --- |
-| `postgres` | `postgres:17` | data in the `pgdata` volume |
-| `redis` | `redis:7-alpine` | pub/sub only, nothing persisted |
-| `backend` | `backend/Dockerfile` | runs `alembic upgrade head`, then uvicorn with `BACKEND_WORKERS` processes (default 2), as a non-root user |
-| `frontend` | `frontend/Dockerfile` | Vite build served by nginx, which also proxies `/api/*` (WebSocket included) to the backend |
+Startup order is gated on health checks: Postgres and Redis, then the backend
+(which runs `alembic upgrade head` first), then the frontend.
 
-The browser only ever talks to the frontend's origin. nginx forwards `/api/...`
-to the backend, so there is no CORS and no backend address baked into the
-JavaScript. Every setting and secret comes from `.env`. Compose refuses to start
-if `POSTGRES_*` or `JWT_SECRET_KEY` is missing, and nothing is hardcoded in the
-Dockerfiles or the compose file. **Change `JWT_SECRET_KEY`** for anything beyond
-local use. If `POSTGRES_PASSWORD` contains URL-special characters
-(`@ : / ? #`), percent-encode it, since it is placed into `DATABASE_URL`.
+- **Configuration:** every setting and secret comes from `.env`. Compose refuses
+  to start without `POSTGRES_*` and `JWT_SECRET_KEY`.
+- **Change `JWT_SECRET_KEY`** for anything beyond local use.
+- **Passwords with special characters:** if `POSTGRES_PASSWORD` contains
+  `@ : / ? #`, percent-encode it.
 
 ```bash
 docker compose down        # stop, keep data
 docker compose down -v     # stop and delete the database volume
 ```
 
-- **Phase 1 — Project setup:** FastAPI backend and Vite/React frontend running independently, frontend calling `GET /health`.
-- **Phase 2 — Database:** PostgreSQL, SQLAlchemy models, Alembic migrations. No API routes, no auth yet.
-- **Phase 3 — Authentication:** register, login, and a JWT-protected `/auth/me`.
-- **Phase 4 — Workspaces:** create/list/read workspaces and manage membership.
-- **Phase 5 — Tasks:** board CRUD scoped to a workspace.
-- **Phase 6 — Frontend:** login, workspace dashboard, and a Kanban board. No WebSockets yet.
-- **Phase 7 — WebSockets:** an authenticated per-workspace connection, tracked server-side.
-- **Phase 8 — Real-time sync:** task create/update/delete pushed to every open board, with reconnection.
-- **Phase 9 — Comments:** persisted task comments, delivered live.
-- **Phase 10 — Concurrency:** version-checked task updates; a stale edit is a 409, never a silent overwrite.
-- **Phase 11 — Redis:** realtime events fan out across backend instances via Redis pub/sub.
-- **Presence:** live "Online now" per workspace, correct across tabs and instances.
+### Native development (hot reload)
 
-## Database
-
-For local development, run just the data services in Docker and the apps
-natively (below). This needs the root `.env` too, for the Postgres credentials:
+Run the data services in Docker and the apps directly:
 
 ```bash
-cp .env.example .env   # once
+cp .env.example .env                  # once; Postgres credentials for compose
 docker compose up -d postgres redis
-```
 
-Redis only passes realtime events between backend instances. It stores nothing
-(persistence is switched off), and Postgres remains the source of truth.
-
-Connection string lives in `backend/.env` (see `backend/.env.example`):
-
-```
-DATABASE_URL=postgresql+psycopg://collabspace:collabspace@localhost:5432/collabspace
-```
-
-### Migrations
-
-Run from `backend/` with the virtualenv active:
-
-```bash
-alembic upgrade head          # apply migrations
-alembic downgrade base        # roll everything back
-alembic revision --autogenerate -m "describe change"   # after editing models
-alembic current               # what's applied
-alembic history               # revision log
-```
-
-Always read a generated migration before applying it — autogenerate is a first draft, not a finished one.
-
-### Schema
-
-| Table | Notes |
-| --- | --- |
-| `users` | unique index on `email` |
-| `workspaces` | |
-| `workspace_members` | association object; unique on `(workspace_id, user_id)`, carries `role` |
-| `tasks` | `status` enum, float `position` for ordering, `version` for optimistic concurrency |
-| `comments` | indexed on `(task_id, created_at)` for threaded reads |
-
-Deleting a workspace cascades to its members and tasks; deleting a task cascades to its comments.
-Deleting a user cascades to their memberships and comments, but their tasks survive with
-`created_by` set to `NULL`.
-
-## Backend
-
-```bash
+# backend: http://localhost:8000
 cd backend
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -r requirements-dev.txt   # app + test tooling
+python3 -m venv .venv && source .venv/bin/activate
+pip install -r requirements-dev.txt
+cp .env.example .env                  # then set JWT_SECRET_KEY
+alembic upgrade head
 uvicorn app.main:app --reload --port 8000
-```
 
-- `GET /health` → `{"status": "ok"}`
-- Docs at http://localhost:8000/docs
-
-`backend/.env` needs a `JWT_SECRET_KEY`. There is deliberately no default, so the
-app refuses to start without one rather than signing tokens with a value that is
-public knowledge:
-
-```bash
-python -c "import secrets; print(secrets.token_urlsafe(48))"
-```
-
-### Authentication
-
-| Endpoint | Purpose |
-| --- | --- |
-| `POST /auth/register` | email + password → 201 with the new user (409 if taken) |
-| `POST /auth/login` | email + password → `access_token` (401 on bad credentials) |
-| `GET /auth/me` | requires `Authorization: Bearer <token>` → the current user |
-
-```bash
-curl -X POST localhost:8000/auth/register -H 'Content-Type: application/json' \
-  -d '{"email":"you@example.com","password":"a-good-password"}'
-
-TOKEN=$(curl -s -X POST localhost:8000/auth/login -H 'Content-Type: application/json' \
-  -d '{"email":"you@example.com","password":"a-good-password"}' | python3 -c 'import json,sys;print(json.load(sys.stdin)["access_token"])')
-
-curl localhost:8000/auth/me -H "Authorization: Bearer $TOKEN"
-```
-
-### Workspaces
-
-Every route below requires `Authorization: Bearer <token>`.
-
-| Endpoint | Who can call it |
-| --- | --- |
-| `POST /workspaces` | any signed-in user; the creator becomes `OWNER` |
-| `GET /workspaces` | returns only the caller's own workspaces |
-| `GET /workspaces/{id}` | members only |
-| `POST /workspaces/{id}/members` | owner or admin |
-| `DELETE /workspaces/{id}/members/{user_id}` | owner or admin |
-| `DELETE /workspaces/{id}/members/me` | any member, to leave |
-
-Add a member by `user_id` or by `email` (exactly one):
-
-```bash
-curl -X POST localhost:8000/workspaces/1/members \
-  -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
-  -d '{"email":"teammate@example.com","role":"MEMBER"}'
-```
-
-Role rules:
-
-- Owners and admins can add and remove members.
-- Only an owner can grant `ADMIN` or `OWNER`, and only an owner can remove another owner.
-- The last owner cannot be removed, so a workspace is never left unadministered.
-- Any member can leave via `.../members/me`, whatever their role. The last-owner
-  rule still applies: promote someone else to owner first, or the request is a 409.
-
-A workspace the caller is not a member of returns **404, not 403** — a 403 would
-confirm that it exists. A non-existent workspace and someone else's workspace are
-indistinguishable from the outside.
-
-### Tasks
-
-| Endpoint | Notes |
-| --- | --- |
-| `GET /workspaces/{id}/tasks` | members only; ordered by status then position |
-| `POST /workspaces/{id}/tasks` | members only; `created_by` comes from the token |
-| `PATCH /tasks/{id}` | partial update; any member of the task's workspace; requires `expected_version` |
-| `DELETE /tasks/{id}` | any member of the task's workspace |
-
-Statuses are `TODO`, `IN_PROGRESS`, `DONE`. A task in a workspace the caller does
-not belong to returns 404, exactly as the workspace routes do.
-
-`position` orders cards within one status column, and columns are numbered
-independently. Omit it on create and the card is appended to the bottom of its
-column; change `status` without sending a `position` and the card lands at the
-bottom of the column it moved into. It is a float so that dropping a card between
-two others is a single write at the midpoint rather than a renumber of everything
-below it.
-
-`created_by`, `version`, `workspace_id` and the timestamps are server-owned.
-Sending any of them in a request body is a 422 rather than a silent no-op, so a
-client bug surfaces immediately.
-
-#### Optimistic concurrency
-
-Every `PATCH /tasks/{id}` must include `expected_version`, the version the client
-last saw:
-
-```bash
-curl -X PATCH localhost:8000/tasks/42 -H "Authorization: Bearer $TOKEN" \
-  -H 'Content-Type: application/json' -d '{"status":"DONE","expected_version":4}'
-```
-
-- If the task is still at that version, the update applies, `version` goes up by
-  one (4 → 5), and `TASK_UPDATED` is broadcast.
-- If the task has moved on, the response is **409** and nothing is written or
-  broadcast. The body carries the task as it is now:
-  `{"detail": "This task was updated by someone else.", "current_task": {...}}`.
-
-The check is part of the write itself:
-`UPDATE tasks ... WHERE id = :id AND version = :expected_version`. A plain
-read-compare-write would let two simultaneous requests both pass the comparison,
-and the second write would overwrite the first. Postgres instead makes the second
-`UPDATE` wait for the first to commit and then re-check its `WHERE`, which no
-longer matches, so it becomes a 409. An empty update quoting the current version
-is a 200 that changes nothing.
-
-Passwords are hashed with bcrypt and never stored or returned in plaintext.
-Tokens are HS256, expire after `ACCESS_TOKEN_EXPIRE_MINUTES`, and carry only the
-user id in `sub`. There is no refresh token or logout yet — a token is valid
-until it expires.
-
-### Comments
-
-| Endpoint | Notes |
-| --- | --- |
-| `GET /tasks/{id}/comments` | the thread, oldest first |
-| `POST /tasks/{id}/comments` | `{"body": "..."}` → 201 with the comment |
-
-```json
-{ "id": 7, "task_id": 42, "author": { "id": 3, "email": "bob@example.com" }, "body": "Looks good", "created_at": "..." }
-```
-
-The author always comes from the token, and sending `author` in the body is a
-422. The body is trimmed and must be 1 to 5000 characters. Access is the same
-check the task routes use: a task you cannot see is a 404 for its comments too.
-Comments are deleted along with their task.
-
-### WebSockets
-
-`WS /ws/workspaces/{id}?token=<access_token>` opens a live channel to one workspace.
-The token goes in the query string because browsers cannot set headers on a
-WebSocket. It is checked exactly as the REST routes check it, and the caller must
-be a member of the workspace.
-
-A rejected connection is accepted and then closed immediately, so the client
-receives a close code and reason (a refusal during the handshake arrives as a bare
-HTTP 403):
-
-| Close code | Meaning |
-| --- | --- |
-| `4401` | missing, invalid or expired token, or the user no longer exists |
-| `4404` | no such workspace, or not a member (deliberately the same, as over REST); also sent to a member's open sockets when they leave or are removed |
-
-On success the server sends
-`{"type": "connected", "workspace_id", "user_id", "online_users"}`, and it
-answers a text `ping` with `{"type": "pong"}`.
-
-#### Events
-
-Every successful task write is broadcast to everyone connected to that task's
-workspace, including the person who made it:
-
-```json
-{ "type": "TASK_UPDATED", "task": { "id": 42, "title": "Build API", "status": "DONE", "version": 3, ... } }
-```
-
-| Type | Sent after |
-| --- | --- |
-| `TASK_CREATED` | `POST /workspaces/{id}/tasks` |
-| `TASK_UPDATED` | `PATCH /tasks/{id}` (not for an empty body, which changes nothing) |
-| `TASK_DELETED` | `DELETE /tasks/{id}`; `task` is the task as it was just before deletion |
-| `COMMENT_CREATED` | `POST /tasks/{id}/comments`; carries `comment` instead of `task` |
-| `USER_JOINED` | a user's first connection to the workspace opens; `{"user": {"id", "email"}}`, not sent to that user |
-| `USER_LEFT` | a user's last connection to the workspace closes; `{"user": {"id", ...}}` |
-
-`task` is exactly what the REST endpoint returns. Events are queued as background
-tasks only once the service call, which commits, has returned, and FastAPI runs
-background tasks only when the handler succeeds. A request that fails validation,
-permission checks or the commit therefore never produces an event, so clients
-never see state that is not in the database.
-
-```bash
-# websocat, or any WebSocket client
-websocat "ws://localhost:8000/ws/workspaces/1?token=$TOKEN"
-```
-
-A user may have several sockets open on one workspace (say, two tabs), and all of
-them receive events.
-
-#### Presence
-
-`online_users` in the `connected` message is everyone online in the workspace
-right now, including you, as `[{"id", "email"}]`. After that, `USER_JOINED` and
-`USER_LEFT` keep it current. A user counts once however many tabs, or servers,
-they are connected through. `USER_JOINED` fires on their first connection and
-`USER_LEFT` only when their last one closes.
-
-Presence is ephemeral and never touches Postgres. With Redis, each workspace has
-a sorted set `presence:{id}` holding one member per user per server,
-`"{user_id}:{instance_id}"`, scored with an expiry time:
-
-- Someone is online while any of their members is unexpired, so a user on
-  server 1 shows as online to a user on server 2.
-- Each server refreshes its own members every 10s, and members lapse after 30s.
-  If a server dies, its users drop out on their own, and the next sweep by a
-  server still serving that workspace sends `USER_LEFT` for them. The sweep uses
-  the result of `ZREM` to decide which server sends it, so it goes out once.
-- Each add or remove runs in a `MULTI` with a read of what remains, so "first
-  connection" and "last connection" are decided atomically.
-
-Each server reconciles the users it has sockets for with the users it has
-registered, rather than reacting to individual connects and disconnects. That
-way a normal close, a removal from the workspace, a failed send, and a reset
-after a Redis outage all end up in the same place. Without Redis, presence is
-the local connection manager.
-
-#### Multiple instances (Redis)
-
-Each instance only holds its own sockets. To reach everyone, every event is
-published to the Redis channel `workspace:{id}`. Each instance subscribes to
-`workspace:*` at startup and delivers what it receives to its local sockets,
-including events it published itself. That gives one delivery path, so no
-duplicates. If Alice is on server 1 and Bob on server 2, an edit on server 1 goes
-Redis → server 2 → Bob. Closing a removed member's sockets travels the same way,
-since those sockets may be on another server.
-
-`REDIS_URL` defaults to `redis://localhost:6379/0`. Set it empty (`REDIS_URL=`)
-to run one instance with in-memory delivery only.
-
-If Redis goes down, the app falls back to single-instance behaviour instead of
-going silent: a publish that fails, or one made while the instance has no
-subscription, is delivered to that instance's own sockets directly. The
-subscriber reconnects with backoff. Once it is back, it closes its sockets with
-`1012` (service restart), because events sent during the gap are lost. Clients
-treat that like any dropped connection: they reconnect and re-read from
-Postgres.
-
-To try it locally, run two instances on the same Postgres and Redis, and point a
-second frontend at the second instance:
-
-```bash
-# backend, two terminals
-uvicorn app.main:app --port 8000
-uvicorn app.main:app --port 8001
-
-# frontend, second terminal
-VITE_API_BASE_URL=http://localhost:8001 npx vite --port 5174
-```
-
-Log in on http://localhost:5173 and on http://localhost:5174 as two members of
-the same workspace. An edit in one window appears in the other, even though they
-are connected to different servers. The second frontend runs on another origin,
-so add it to the allow-list first:
-`CORS_ORIGINS=http://localhost:5173,http://localhost:5174` in `backend/.env`.
-
-### Tests
-
-```bash
-cd backend
-pytest
-```
-
-About 180 tests, around 15s, organised by feature:
-
-| File | Covers |
-| --- | --- |
-| `test_auth.py` | register (duplicates, email and password rules), login (wrong password and unknown email are indistinguishable), and token rejection: missing, expired, wrong signature, `alg: none`, malformed, deleted user |
-| `test_authorization.py` | every workspace, task and comment endpoint returns 404 to an outsider, identical to a missing resource; each role can use the workspace; who may add and remove members, grant roles, and remove owners; the last owner rule |
-| `test_workspaces.py` | creating, listing and adding members (by email or id), plus the validation and error cases |
-| `test_tasks.py` | create, read, update and delete, column ordering, validation, server-owned fields |
-| `test_comments.py` | threads, author from the token, validation |
-| `test_websockets.py` | connect and reject (4401 / 4404), manager cleanup, events reaching clients, workspace isolation, failed requests broadcasting nothing |
-| `test_task_concurrency.py` | optimistic concurrency, including truly simultaneous writers |
-| `test_event_bus.py`, `test_presence.py` | Redis fan-out and presence across instances (skipped without Redis) |
-
-Every test leaves the app's connection manager empty; a fixture fails any test
-that leaks a socket. bcrypt runs at cost 4 under test, since nothing depends on
-the work factor and cost 12 made the suite take minutes.
-
-The tests need the Postgres from `docker compose up -d postgres redis`. They run against a
-separate `<database>_test` database, created on first run, rebuilt each session
-and emptied after every test. `tests/conftest.py` points `DATABASE_URL` at it
-before anything imports the app. As a backstop, the fixtures refuse to drop or
-truncate anything in a database whose name does not end in `_test`. The
-concurrency tests rely on real Postgres row locking, so they cannot run on
-SQLite.
-
-The app under test runs with Redis switched off. The event-bus tests start two
-buses with separate connection managers, standing in for two servers, against
-the real Redis, and are skipped if it is not running.
-
-### Continuous integration
-
-`.github/workflows/ci.yml` runs on every push and pull request, as two parallel
-jobs. Either one failing fails the run.
-
-- **Backend tests:** Python 3.14, with Postgres 17 and Redis 7 as service
-  containers. Installs `requirements.txt` + `requirements-dev.txt`, runs
-  `alembic upgrade head` against the test database, then `pytest`. The JWT
-  secret is generated fresh for each run rather than committed.
-- **Frontend build:** Node 22, `npm ci`, `npm run build`.
-
-Nothing is deployed.
-
-## Frontend
-
-```bash
+# frontend: http://localhost:5173
 cd frontend
 npm install
 npm run dev
 ```
 
-Runs on http://localhost:5173. The API base URL comes from `VITE_API_BASE_URL`
-in `frontend/.env`.
+If the Docker backend is also running, stop it first: `docker compose stop backend frontend`.
 
-### Screens
+### Configuration
 
-| Route | What it does |
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `DATABASE_URL` | local Postgres | SQLAlchemy URL (built by compose from `POSTGRES_*`) |
+| `JWT_SECRET_KEY` | none, required | signs access tokens |
+| `ACCESS_TOKEN_EXPIRE_MINUTES` | `60` | token lifetime |
+| `REDIS_URL` | `redis://localhost:6379/0` | empty = single process, in-memory events |
+| `CORS_ORIGINS` | `http://localhost:5173` | comma-separated; not needed behind nginx |
+| `BACKEND_WORKERS` | `2` | uvicorn worker processes (compose) |
+| `DB_POOL_SIZE` / `DB_MAX_OVERFLOW` | `5` / `10` | connection pool per worker |
+| `DB_POOL_TIMEOUT` / `DB_POOL_RECYCLE` | `10` / `1800` s | fail fast; recycle idle connections |
+| `LOG_LEVEL` / `LOG_FORMAT` | `INFO` / `json` | `text` for readable local logs |
+| `VITE_API_BASE_URL` | `http://localhost:8000` | frontend build; `/api` in Docker |
+| `VITE_ENABLE_GUEST` | `false` | "Continue as guest" in production builds |
+
+## Testing
+
+```bash
+docker compose up -d postgres redis
+cd backend && pytest
+```
+
+About 210 tests in about 15 seconds, organised by feature:
+
+| File | Covers |
 | --- | --- |
-| `/login` | log in or create an account; redirects to the dashboard on success |
-| `/workspaces` | "My Workspaces" list + create |
-| `/workspaces/:id` | Kanban board: TODO / IN PROGRESS / DONE |
+| `test_auth.py` | registration rules; wrong password and unknown email are indistinguishable; expired, forged, `alg: none`, malformed and missing tokens |
+| `test_authorization.py` | every workspace, task and comment endpoint returns 404 to outsiders, identical to a missing resource; role rules; the last-owner rule |
+| `test_workspaces.py`, `test_tasks.py`, `test_comments.py` | CRUD, validation, server-owned fields, ordering |
+| `test_websockets.py` | accept and reject (4401 / 4404), socket cleanup, events reaching clients, workspace isolation, failed requests broadcasting nothing |
+| `test_task_concurrency.py` | optimistic concurrency, including eight truly simultaneous writers |
+| `test_event_bus.py`, `test_presence.py` | fan-out and presence across two simulated servers on a real Redis |
+| `test_production.py` | error format, no input echo, id and number bounds, 500/503 handling, log contents, WebSocket edge cases |
 
-The dashboard and board are behind a route guard, so a logged-out visitor is sent
-to `/login` and returned to wherever they were headed after signing in. The token
-lives in `localStorage`; a 401 from any request other than a login attempt clears
-it and drops you back to the login page.
+**How the tests run:**
+- **Separate database:** they use `<database>_test`, created automatically and
+  emptied after every test. They refuse to touch any database whose name doesn't
+  end in `_test`.
+- **No leaked sockets:** a fixture fails any test that leaves a WebSocket
+  registered.
+- **Speed:** bcrypt runs at a lower cost under test, since nothing depends on the
+  work factor.
+- **The tests catch real bugs:** the suite was checked by deliberately breaking
+  five security and correctness rules, one at a time; it failed each time.
 
-Cards show the title and "Created by <name>". The API stores `created_by` as a
-user id, so the name is resolved client-side from the member list that
-`GET /workspaces/{id}` already returns — no extra endpoint needed.
+**CI:** `.github/workflows/ci.yml` runs on every push and pull request:
+- **Backend:** Postgres and Redis service containers, `alembic upgrade head`,
+  then `pytest`.
+- **Frontend:** `npm ci` and `npm run build`.
 
-Drag a card between columns, or change its status in the detail view; either way
-it is a `PATCH /tasks/{id}`. The detail view also edits the title and
-description, and deletes the task behind a confirm step.
+---
 
-The board stays live over the workspace WebSocket. Other people's changes appear
-without a reload: events are applied to local state, never by refetching. A task
-can arrive twice, once in the REST response to your own change and once in its
-broadcast, so cards are de-duplicated by id and an update never replaces a newer
-`version` with an older one. If someone else edits the task you have open, your
-unsaved edits are kept.
+## API Reference
 
-Under the header, **Online now** lists everyone with the workspace open, you
-first, and the header line shows "*N* users online". Both are seeded on every
-(re)connect and updated live. While disconnected they show as unknown rather
-than a stale count.
+The interactive docs at `/docs` list every route, with its parameters and the
+error responses it can return. The essentials:
 
-The header shows **Connected / Reconnecting… / Offline**. A dropped connection
-retries with jittered exponential backoff (about 1s, 2s, 4s … capped at 30s, six
-attempts) and then shows Offline with a Retry button. Losing the network shows
-Offline straight away and reconnects as soon as it is back. Events sent while
-disconnected are lost, so every reconnect re-reads the task list once. A rejected
-token logs you out, and removal from the workspace stops retrying.
+### Errors
 
-Edits carry the version they were based on. That is the version the form was
-loaded with, not the live one, so an edit started before someone else's save is
-refused rather than quietly overwriting it. While that is the case, the form warns
-that saving will be refused. On a 409 the board and the open form switch to the
-task as the server returned it, with *"This task was updated by someone else —
-showing the latest version."* Nothing is merged, so you redo your edit on top of
-the latest version if you still want it. A dragged card cannot be moved again
-until its first move has answered, so you never conflict with yourself.
+Every error, whatever produced it, has the same body:
 
-Opening a task loads its comment thread, and posting goes through the API. A
-`COMMENT_CREATED` for the open task is appended live; one for another task is
-picked up when that task is opened. The open thread is re-read on reconnect, like
-the board. If a post fails, the text stays in the box with the error beneath it.
+```json
+{ "detail": "Human-readable message.", "code": "not_found", "request_id": "4f9c2a1b7d3e8a06" }
+```
 
-### Guest mode (temporary)
+- **`request_id`** is also in the `X-Request-ID` response header, and on every log
+  line for that request.
+- **422s** add `errors: [{"field", "message"}]`. They never echo the submitted
+  value, which for a rejected password would mean repeating it.
+- **Unexpected failures** are a generic 500; the traceback goes only to the log.
+- **A lost database connection** is a 503 (`database_unavailable`). The
+  connection pool replaces dead connections, so it clears as soon as the database
+  is back.
 
-The login page offers **Continue as guest**, which provisions a throwaway account
-through the real API and seeds it with a demo workspace and four tasks, so the UI
-can be looked at without signing up.
+| Code | When |
+| --- | --- |
+| `unauthorized` (401) | missing, invalid or expired token |
+| `forbidden` (403) | your role doesn't allow it |
+| `not_found` (404) | doesn't exist, or isn't visible to you |
+| `conflict` / `version_conflict` (409) | duplicate, last-owner rule, or a stale task edit (adds `current_task`) |
+| `validation_error` (422) | invalid input |
+| `database_unavailable` (503) | database unreachable |
 
-It is a development convenience, not a shared demo login:
+### Auth
 
-- Each browser gets its own randomly generated account, so there is no fixed
-  credential for anyone who finds the deployment, and one guest cannot see
-  another's board.
-- The data is real — it is written to Postgres like any other account's.
-- It is enabled automatically in `npm run dev`. A production build has to opt in
-  with `VITE_ENABLE_GUEST=true`.
-- Credentials are kept in `localStorage`, so returning as a guest resumes the
-  same sandbox. Clear site data to start fresh.
+| Endpoint | Notes |
+| --- | --- |
+| `POST /auth/register` | `{email, password}` → 201. Email normalised; password 8 to 72 bytes; 409 if taken |
+| `POST /auth/login` | → `{access_token, token_type, expires_in}`; one 401 for any bad credentials |
+| `GET /auth/me` | the current user |
 
-Remove the button by dropping the `isGuestEnabled()` block in
-`src/pages/Login.jsx` when it is no longer wanted.
+Send the token as `Authorization: Bearer <token>`. Tokens are HS256, carry only
+the user id, and expire after `ACCESS_TOKEN_EXPIRE_MINUTES`. There are no refresh
+tokens yet.
+
+### Workspaces
+
+| Endpoint | Who |
+| --- | --- |
+| `POST /workspaces` | anyone signed in; the creator becomes OWNER |
+| `GET /workspaces` | your workspaces, with your role in each |
+| `GET /workspaces/{id}` | members; includes the member list |
+| `POST /workspaces/{id}/members` | owner or admin; `{email}` or `{user_id}`, optional `role` |
+| `DELETE /workspaces/{id}/members/{user_id}` | owner or admin |
+| `DELETE /workspaces/{id}/members/me` | any member, to leave |
+
+**Role rules:**
+- Only an owner can grant ADMIN or OWNER, and only an owner can remove an owner.
+- The last owner can't be removed and can't leave.
+- A removed member's open WebSockets are closed with 4404.
+
+### Tasks
+
+| Endpoint | Notes |
+| --- | --- |
+| `GET /workspaces/{id}/tasks` | in board order (status, then position) |
+| `POST /workspaces/{id}/tasks` | `{title, description?, status?, position?}`; `created_by` comes from the token |
+| `PATCH /tasks/{id}` | partial update; **requires `expected_version`**; 409 if stale |
+| `DELETE /tasks/{id}` | also deletes its comments |
+
+**Fields and limits:**
+- **Limits:** titles 1 to 255 characters, descriptions up to 10,000.
+- **Server-owned fields:** `created_by`, `version`, `workspace_id` and the
+  timestamps. Sending any of them is a 422.
+- **`position`:** a finite float that orders cards within a column. When it's
+  omitted, the card goes to the bottom of its column. A float lets a drop between
+  two cards be a single write at their midpoint.
+
+### Comments
+
+| Endpoint | Notes |
+| --- | --- |
+| `GET /tasks/{id}/comments` | oldest first |
+| `POST /tasks/{id}/comments` | `{body}`, 1 to 5000 characters; the author comes from the token |
+
+### WebSocket
+
+`/ws/workspaces/{id}?token=<access_token>`. The token goes in the query string
+because browsers can't set headers on a WebSocket. Server logs never include
+query strings.
+
+| Server → client | When |
+| --- | --- |
+| `connected` | right after connecting: `{workspace_id, user_id, online_users}` |
+| `TASK_CREATED` / `TASK_UPDATED` / `TASK_DELETED` | after a committed task write; `{task}` |
+| `COMMENT_CREATED` | after a committed comment; `{comment}` |
+| `USER_JOINED` / `USER_LEFT` | someone's first connection opens or last one closes; `{user}` |
+| `pong` | in reply to the text `ping` |
+
+| Close code | Meaning | Client behaviour |
+| --- | --- | --- |
+| `4401` | bad or expired token | log out |
+| `4404` | not a member (or removed) | stop retrying |
+| `1012` / `1013` | server restart / try again later | reconnect with backoff |
+
+### Logging
+
+Logs are one JSON object per line on stdout (`LOG_FORMAT=text` for local
+readability). Every line within a request carries its `request_id`.
+
+**Events logged:**
+- requests (method, path, status, duration)
+- auth: login success and failure, token rejected, registration
+- WebSockets: connected, disconnected, rejected
+- version conflicts and membership changes
+- database outages and unhandled errors, with tracebacks
+
+Passwords, tokens and query strings are never logged.
+
+## Database
+
+| Table | Notes |
+| --- | --- |
+| `users` | unique `email` |
+| `workspaces` | |
+| `workspace_members` | unique `(workspace_id, user_id)`, with `role` |
+| `tasks` | `status` enum, float `position`, `version` for concurrency |
+| `comments` | indexed on `(task_id, created_at)` |
+
+**What deleting cascades to:**
+- A workspace takes its members and tasks with it.
+- A task takes its comments.
+- A user takes their memberships and comments. Their tasks remain, with
+  `created_by` set to null.
+
+Schema changes go through Alembic (`alembic revision --autogenerate -m "..."`,
+then review the result before applying it with `alembic upgrade head`).
+
+## Frontend Notes
+
+**Loading, errors and empty states:**
+- **Loading:** skeletons on the first load of the dashboard and board, and a
+  spinner for comments. Refresh keeps the board on screen.
+- **Failed loads:** an error box with **Try again**. Errors from actions such as
+  a failed move are dismissible, and the move is rolled back.
+- **Crashes:** a render error shows a recovery screen instead of a blank page.
+- **Empty states:** "No workspaces yet", and "No tasks" in an empty column.
+
+**Responsive:**
+- Columns stack below 800px.
+- The header truncates long emails.
+- The task dialog fits phone screens.
+- Phones can't drag, so tasks move with the Status dropdown in the task detail.
+
+**Guest mode:** for development only, "Continue as guest" creates a throwaway
+account with a demo board. It's on in `npm run dev`, and a production build needs
+`VITE_ENABLE_GUEST=true`.
+
+## Project History
+
+Built in phases:
+1. Project setup.
+2. Database.
+3. Authentication.
+4. Workspaces.
+5. Tasks.
+6. Frontend.
+7. WebSockets.
+8. Real-time sync.
+9. Comments.
+10. Optimistic concurrency.
+11. Redis fan-out.
+
+Then presence, the full test suite, Docker, CI, and production hardening.

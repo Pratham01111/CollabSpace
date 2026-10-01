@@ -3,6 +3,7 @@ from datetime import datetime
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from app.database.models import TaskStatus
+from app.validation import MAX_DESCRIPTION_LENGTH, MAX_ID, MAX_TITLE_LENGTH
 
 
 class TaskCreate(BaseModel):
@@ -10,11 +11,11 @@ class TaskCreate(BaseModel):
     # 422 instead of having the field silently dropped.
     model_config = ConfigDict(extra="forbid")
 
-    title: str = Field(min_length=1, max_length=255)
-    description: str | None = None
+    title: str = Field(min_length=1, max_length=MAX_TITLE_LENGTH)
+    description: str | None = Field(default=None, max_length=MAX_DESCRIPTION_LENGTH)
     status: TaskStatus = TaskStatus.TODO
     # Omitted means "append to the end of that status column".
-    position: float | None = None
+    position: float | None = Field(default=None, allow_inf_nan=False)
 
     @field_validator("title")
     @classmethod
@@ -38,11 +39,11 @@ class TaskUpdate(BaseModel):
 
     # The version the client last saw. The update applies only if the task is
     # still at that version; otherwise it is a 409 carrying the current task.
-    expected_version: int = Field(ge=1)
-    title: str | None = Field(default=None, min_length=1, max_length=255)
-    description: str | None = None
+    expected_version: int = Field(ge=1, le=MAX_ID)
+    title: str | None = Field(default=None, min_length=1, max_length=MAX_TITLE_LENGTH)
+    description: str | None = Field(default=None, max_length=MAX_DESCRIPTION_LENGTH)
     status: TaskStatus | None = None
-    position: float | None = None
+    position: float | None = Field(default=None, allow_inf_nan=False)
 
     # Only runs for keys the client actually sent; an omitted field keeps its
     # default without passing through here.
@@ -79,7 +80,10 @@ class TaskResponse(BaseModel):
 
 class TaskConflictResponse(BaseModel):
     """409 body: the edit was based on an old version, so here is the task as
-    it stands now. Nothing was changed."""
+    it stands now. Nothing was changed. The usual error fields, plus
+    ``current_task``."""
 
     detail: str
+    code: str = "version_conflict"
+    request_id: str | None = None
     current_task: TaskResponse

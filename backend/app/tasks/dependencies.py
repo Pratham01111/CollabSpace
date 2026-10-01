@@ -8,11 +8,12 @@ from sqlalchemy.orm import Session
 from app.auth.dependencies import CurrentUser
 from app.database import get_db
 from app.database.models import Task
+from app.validation import MAX_ID
 from app.workspaces import service as workspace_service
 
 
 def get_task_or_404(
-    task_id: Annotated[int, Path(ge=1)],
+    task_id: Annotated[int, Path(ge=1, le=MAX_ID)],
     current_user: CurrentUser,
     db: Annotated[Session, Depends(get_db)],
 ) -> Task:

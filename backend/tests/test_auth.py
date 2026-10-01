@@ -109,7 +109,11 @@ def test_wrong_password_and_unknown_email_are_indistinguishable(client):
     # Same status, same body, same header: the endpoint must not reveal
     # which addresses have accounts.
     assert wrong_password.status_code == unknown_email.status_code == 401
-    assert wrong_password.json() == unknown_email.json() == {"detail": "Incorrect email or password."}
+    same = lambda body: {k: v for k, v in body.items() if k != "request_id"}  # noqa: E731
+    assert same(wrong_password.json()) == same(unknown_email.json()) == {
+        "detail": "Incorrect email or password.",
+        "code": "unauthorized",
+    }
     assert wrong_password.headers["www-authenticate"] == unknown_email.headers["www-authenticate"] == "Bearer"
 
 

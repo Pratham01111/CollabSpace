@@ -19,7 +19,7 @@ export default function BackendStatus() {
   return (
     <span className={`backend-status ${ok ? 'is-ok' : 'is-down'}`} title={`Backend status: ${status}`}>
       <span className="dot" aria-hidden="true" />
-      Backend: {status}
+      <span className="backend-status-label">Backend: {status}</span>
     </span>
   )
 }

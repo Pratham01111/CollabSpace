@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { errorMessage, workspaces as workspacesApi } from '../api/client.js'
+import { DashboardSkeleton, ErrorState } from '../components/StatusViews.jsx'
 
 export default function Dashboard() {
   const [items, setItems] = useState([])
@@ -84,11 +85,19 @@ export default function Dashboard() {
         </form>
       )}
 
-      {loading && <p className="muted">Loading workspaces…</p>}
-      {error && <p className="alert" role="alert">{error}</p>}
+      {loading && items.length === 0 && <DashboardSkeleton />}
+      {error && (
+        <ErrorState title="Couldn't load your workspaces" message={error} onRetry={load} />
+      )}
 
-      {!loading && !error && items.length === 0 && (
-        <p className="muted empty">No workspaces yet. Create one to get started.</p>
+      {!loading && !error && items.length === 0 && !creating && (
+        <div className="empty-state">
+          <p className="empty-state-title">No workspaces yet</p>
+          <p className="muted">A workspace holds a board and the people working on it.</p>
+          <button type="button" className="btn btn-primary" onClick={() => setCreating(true)}>
+            Create your first workspace
+          </button>
+        </div>
       )}
 
       <ul className="workspace-list">

@@ -7,6 +7,7 @@ from app.auth.dependencies import CurrentUser
 from app.comments import service
 from app.comments.schemas import CommentAuthor, CommentCreate, CommentResponse
 from app.database import get_db
+from app.errors import error_docs
 from app.database.models import Comment
 from app.realtime.events import EventType, queue_broadcast
 from app.tasks.dependencies import CurrentTask
@@ -28,7 +29,12 @@ def _comment_response(comment: Comment) -> CommentResponse:
     )
 
 
-@router.get("/{task_id}/comments", response_model=list[CommentResponse])
+@router.get(
+    "/{task_id}/comments",
+    response_model=list[CommentResponse],
+    summary="List comments",
+    responses=error_docs(401, 404, 422),
+)
 def list_comments(task: CurrentTask, db: DbSession) -> list[CommentResponse]:
     """The task's comments, oldest first."""
     return [_comment_response(c) for c in service.list_comments(db, task)]
@@ -38,6 +44,8 @@ def list_comments(task: CurrentTask, db: DbSession) -> list[CommentResponse]:
     "/{task_id}/comments",
     response_model=CommentResponse,
     status_code=status.HTTP_201_CREATED,
+    summary="Add a comment",
+    responses=error_docs(401, 404, 422),
 )
 def create_comment(
     payload: CommentCreate,
@@ -46,6 +54,9 @@ def create_comment(
     db: DbSession,
     background: BackgroundTasks,
 ) -> CommentResponse:
+    """Comment on a task. The author comes from the token; the body is trimmed and must be
+    1 to 5000 characters. Broadcasts COMMENT_CREATED.
+    """
     comment = service.create_comment(db, task, current_user, payload.body)
     response = _comment_response(comment)
     # Queued only now that the commit has succeeded; see app.realtime.events.

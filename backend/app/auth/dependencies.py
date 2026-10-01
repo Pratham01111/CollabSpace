@@ -1,5 +1,6 @@
 """The dependency that turns an Authorization header into a User."""
 
+import logging
 from typing import Annotated
 
 import jwt
@@ -11,6 +12,8 @@ from app.auth.security import decode_access_token
 from app.auth.service import get_user_by_id
 from app.database import get_db
 from app.database.models import User
+
+logger = logging.getLogger("app.auth")
 
 # auto_error=False so a missing header lands here rather than becoming
 # FastAPI's default 403; an absent credential is a 401.
@@ -65,6 +68,7 @@ def get_current_user(
     try:
         return user_from_token(db, credentials.credentials)
     except InvalidTokenError as exc:
+        logger.info("token rejected", extra={"event": "auth.token_rejected", "reason": str(exc)})
         raise _unauthorized(str(exc)) from None
 
 

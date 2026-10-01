@@ -1,3 +1,4 @@
+import logging
 from typing import Annotated
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Response, status
@@ -6,6 +7,7 @@ from sqlalchemy.orm import Session
 
 from app.auth.dependencies import CurrentUser
 from app.database import get_db
+from app.errors import error_docs, error_response
 from app.realtime.events import EventType, queue_broadcast, task_event
 from app.tasks import service
 from app.tasks.dependencies import CurrentTask
@@ -19,8 +21,15 @@ DbSession = Annotated[Session, Depends(get_db)]
 workspace_tasks_router = APIRouter(prefix="/workspaces", tags=["tasks"])
 tasks_router = APIRouter(prefix="/tasks", tags=["tasks"])
 
+logger = logging.getLogger("app.tasks")
 
-@workspace_tasks_router.get("/{workspace_id}/tasks", response_model=list[TaskResponse])
+
+@workspace_tasks_router.get(
+    "/{workspace_id}/tasks",
+    response_model=list[TaskResponse],
+    summary="List tasks",
+    responses=error_docs(401, 404, 422),
+)
 def list_tasks(membership: CurrentMembership, db: DbSession) -> list[TaskResponse]:
     """All tasks in the workspace, ordered by status then position."""
     tasks = service.list_tasks(db, membership.workspace_id)
@@ -31,6 +40,8 @@ def list_tasks(membership: CurrentMembership, db: DbSession) -> list[TaskRespons
     "/{workspace_id}/tasks",
     response_model=TaskResponse,
     status_code=status.HTTP_201_CREATED,
+    summary="Create a task",
+    responses=error_docs(401, 404, 422),
 )
 def create_task(
     payload: TaskCreate,
@@ -39,6 +50,9 @@ def create_task(
     db: DbSession,
     background: BackgroundTasks,
 ) -> TaskResponse:
+    """Create a task. `created_by` comes from the token. Without a `position` the task goes
+    to the bottom of its column. Broadcasts TASK_CREATED.
+    """
     task = service.create_task(
         db,
         workspace_id=membership.workspace_id,
@@ -56,7 +70,16 @@ def create_task(
 @tasks_router.patch(
     "/{task_id}",
     response_model=TaskResponse,
-    responses={status.HTTP_409_CONFLICT: {"model": TaskConflictResponse}},
+    summary="Update a task",
+    responses={
+        **error_docs(401, 404, 422),
+        status.HTTP_409_CONFLICT: {
+            "model": TaskConflictResponse,
+            "description": (
+                "Stale `expected_version`. Nothing changed; `current_task` is the task as it is now."
+            ),
+        },
+    },
 )
 def update_task(
     payload: TaskUpdate, task: CurrentTask, db: DbSession, background: BackgroundTasks
@@ -71,11 +94,21 @@ def update_task(
     try:
         updated = service.update_task(db, task, changes, payload.expected_version)
     except service.VersionConflictError as conflict:
-        body = TaskConflictResponse(
-            detail="This task was updated by someone else.",
-            current_task=TaskResponse.model_validate(conflict.current),
+        logger.info(
+            "update refused: version conflict",
+            extra={
+                "event": "task.version_conflict",
+                "task_id": task.id,
+                "expected_version": payload.expected_version,
+                "current_version": conflict.current.version,
+            },
         )
-        return JSONResponse(status_code=status.HTTP_409_CONFLICT, content=body.model_dump(mode="json"))
+        return error_response(
+            status.HTTP_409_CONFLICT,
+            "This task was updated by someone else.",
+            "version_conflict",
+            current_task=TaskResponse.model_validate(conflict.current).model_dump(mode="json"),
+        )
     except service.TaskGoneError:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Task not found.") from None
 
@@ -86,8 +119,14 @@ def update_task(
     return response
 
 
-@tasks_router.delete("/{task_id}", status_code=status.HTTP_204_NO_CONTENT)
+@tasks_router.delete(
+    "/{task_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    summary="Delete a task",
+    responses=error_docs(401, 404, 422),
+)
 def delete_task(task: CurrentTask, db: DbSession, background: BackgroundTasks) -> Response:
+    """Delete a task and its comments. Broadcasts TASK_DELETED."""
     # Snapshot before the row goes; the event carries the task as it last was.
     event = task_event(EventType.TASK_DELETED, task)
     workspace_id = task.workspace_id

@@ -3,6 +3,7 @@ from datetime import datetime
 from pydantic import BaseModel, ConfigDict, EmailStr, Field, model_validator
 
 from app.database.models import WorkspaceRole
+from app.validation import MAX_ID
 
 
 class WorkspaceCreate(BaseModel):
@@ -44,7 +45,7 @@ class WorkspaceDetailResponse(WorkspaceResponse):
 class MemberAdd(BaseModel):
     """Identify the new member by id or email — exactly one."""
 
-    user_id: int | None = None
+    user_id: int | None = Field(default=None, ge=1, le=MAX_ID)
     email: EmailStr | None = None
     role: WorkspaceRole = WorkspaceRole.MEMBER
 

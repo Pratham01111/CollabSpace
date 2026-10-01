@@ -27,6 +27,10 @@ engine = create_engine(
     # Verify a pooled connection is still alive before handing it out, so a
     # restarted database doesn't surface as a stale-connection error.
     pool_pre_ping=True,
+    pool_size=settings.db_pool_size,
+    max_overflow=settings.db_max_overflow,
+    pool_timeout=settings.db_pool_timeout,
+    pool_recycle=settings.db_pool_recycle,
 )
 
 SessionLocal = sessionmaker(bind=engine, autoflush=False, expire_on_commit=False)

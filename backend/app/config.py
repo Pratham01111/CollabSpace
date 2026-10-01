@@ -23,6 +23,19 @@ class Settings(BaseSettings):
     # proxies the API from one origin.
     cors_origins: str = "http://localhost:5173"
 
+    # Connection pool, per worker process. With the defaults, 2 workers can hold
+    # at most 2 * (5 + 10) = 30 connections, well under Postgres's default 100.
+    db_pool_size: int = 5
+    db_max_overflow: int = 10
+    # Fail fast with a 503 rather than letting requests queue for a connection.
+    db_pool_timeout: int = 10
+    # Recycle connections before any proxy or firewall idles them out.
+    db_pool_recycle: int = 1800
+
+    # INFO, DEBUG, WARNING...; json (one object per line) or text.
+    log_level: str = "INFO"
+    log_format: str = "json"
+
     # Echo every SQL statement to stdout. Useful while learning the ORM.
     sql_echo: bool = False
 

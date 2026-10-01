@@ -10,6 +10,7 @@ import {
 import { STATUSES, statusLabel } from '../constants.js'
 import ConnectionStatus from '../components/ConnectionStatus.jsx'
 import OnlineNow from '../components/OnlineNow.jsx'
+import { BoardSkeleton, ErrorState } from '../components/StatusViews.jsx'
 import TaskCard from '../components/TaskCard.jsx'
 import TaskDetail from '../components/TaskDetail.jsx'
 import useWorkspaceSocket from '../hooks/useWorkspaceSocket.js'
@@ -281,13 +282,15 @@ export default function Workspace() {
     }))
   }
 
-  if (loading) return <p className="muted centered">Loading workspace…</p>
+  // Skeleton only for the first load; Refresh keeps the board on screen.
+  if (loading && !workspace) return <BoardSkeleton />
 
   if (error && !workspace) {
     return (
       <section className="page">
-        <p className="alert" role="alert">{error}</p>
-        <Link to="/workspaces" className="btn">← Back to workspaces</Link>
+        <ErrorState title="Couldn't open this workspace" message={error} onRetry={load}>
+          <Link to="/workspaces" className="btn">← Back to workspaces</Link>
+        </ErrorState>
       </section>
     )
   }
@@ -324,7 +327,14 @@ export default function Workspace() {
         displayName={displayName}
       />
 
-      {error && <p className="alert" role="alert">{error}</p>}
+      {error && (
+        <div className="alert alert-dismissible" role="alert">
+          <span>{error}</span>
+          <button type="button" className="btn-dismiss" onClick={() => setError(null)} aria-label="Dismiss">
+            ✕
+          </button>
+        </div>
+      )}
 
       <div className="board">
         {STATUSES.map((status) => (
@@ -364,6 +374,10 @@ export default function Workspace() {
                   onDragEnd={() => setDraggingId(null)}
                 />
               ))}
+
+              {byStatus[status].length === 0 && composing !== status && (
+                <p className="column-empty">No tasks</p>
+              )}
 
               {composing === status ? (
                 <form className="card compose" onSubmit={(e) => handleCreate(e, status)}>
@@ -423,6 +437,7 @@ export default function Workspace() {
           }))}
           commentsLoading={commentsLoading}
           commentsError={commentsError}
+          onRetryComments={() => setCommentsReload((n) => n + 1)}
           onAddComment={handleAddComment}
           onSave={handleSave}
           onDelete={handleDelete}

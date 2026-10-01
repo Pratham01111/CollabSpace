@@ -1,3 +1,4 @@
+import logging
 from typing import Annotated
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Path, Response, status
@@ -5,8 +6,10 @@ from sqlalchemy.orm import Session
 
 from app.auth.dependencies import CurrentUser
 from app.database import get_db
+from app.errors import error_docs
 from app.database.models import WorkspaceMember
 from app.realtime.bus import bus
+from app.validation import MAX_ID
 from app.realtime.manager import CLOSE_WORKSPACE_NOT_FOUND
 from app.workspaces import service
 from app.workspaces.dependencies import CurrentMembership, MembershipManager
@@ -19,6 +22,8 @@ from app.workspaces.schemas import (
 )
 
 router = APIRouter(prefix="/workspaces", tags=["workspaces"])
+
+logger = logging.getLogger("app.workspaces")
 
 DbSession = Annotated[Session, Depends(get_db)]
 
@@ -46,17 +51,28 @@ def _disconnect_former_member(background: BackgroundTasks, workspace_id: int, us
     would keep receiving the workspace's events. Queued, so it only happens
     once the removal has committed; sent via the bus, as their sockets may be
     on another instance."""
+    logger.info(
+        "member left or removed",
+        extra={"event": "workspace.member_removed", "workspace_id": workspace_id, "user_id": user_id},
+    )
     background.add_task(
         bus.disconnect_user, workspace_id, user_id, CLOSE_WORKSPACE_NOT_FOUND, "Workspace not found."
     )
 
 
-@router.post("", response_model=WorkspaceResponse, status_code=status.HTTP_201_CREATED)
+@router.post(
+    "",
+    response_model=WorkspaceResponse,
+    status_code=status.HTTP_201_CREATED,
+    summary="Create a workspace",
+    responses=error_docs(401, 422),
+)
 def create_workspace(
     payload: WorkspaceCreate,
     current_user: CurrentUser,
     db: DbSession,
 ) -> WorkspaceResponse:
+    """Create a workspace. The caller becomes its OWNER."""
     workspace, membership = service.create_workspace(db, payload.name, current_user)
     return WorkspaceResponse(
         id=workspace.id,
@@ -66,14 +82,25 @@ def create_workspace(
     )
 
 
-@router.get("", response_model=list[WorkspaceResponse])
+@router.get(
+    "",
+    response_model=list[WorkspaceResponse],
+    summary="List my workspaces",
+    responses=error_docs(401),
+)
 def list_workspaces(current_user: CurrentUser, db: DbSession) -> list[WorkspaceResponse]:
     """Only workspaces the caller belongs to — there is no listing of all workspaces."""
     return [_workspace_response(m) for m in service.list_memberships_for_user(db, current_user)]
 
 
-@router.get("/{workspace_id}", response_model=WorkspaceDetailResponse)
+@router.get(
+    "/{workspace_id}",
+    response_model=WorkspaceDetailResponse,
+    summary="Get a workspace",
+    responses=error_docs(401, 404, 422),
+)
 def get_workspace(membership: CurrentMembership, db: DbSession) -> WorkspaceDetailResponse:
+    """The workspace, your role in it, and its members. Members only."""
     members = service.list_members(db, membership.workspace_id)
     return WorkspaceDetailResponse(
         id=membership.workspace.id,
@@ -88,12 +115,21 @@ def get_workspace(membership: CurrentMembership, db: DbSession) -> WorkspaceDeta
     "/{workspace_id}/members",
     response_model=MemberResponse,
     status_code=status.HTTP_201_CREATED,
+    summary="Add a member",
+    responses=error_docs(
+        401, 403, 404, 409, 422,
+        s403="Members cannot add people, and only an owner can grant ADMIN or OWNER.",
+        s409="Already a member.",
+    ),
 )
 def add_member(
     payload: MemberAdd,
     actor: MembershipManager,
     db: DbSession,
 ) -> MemberResponse:
+    """Add a user by `email` or `user_id` (exactly one), as MEMBER unless `role` says
+    otherwise. Owners and admins only; granting ADMIN or OWNER takes an owner.
+    """
     try:
         membership = service.add_member(
             db,
@@ -119,7 +155,12 @@ def add_member(
 # Registered before the /{user_id} route below on purpose. Route matching is
 # ordered, and "/members/{user_id}" would match the literal path "/members/me"
 # first and then fail int conversion with a 422 — it does not fall through.
-@router.delete("/{workspace_id}/members/me", status_code=status.HTTP_204_NO_CONTENT)
+@router.delete(
+    "/{workspace_id}/members/me",
+    status_code=status.HTTP_204_NO_CONTENT,
+    summary="Leave a workspace",
+    responses=error_docs(401, 404, 409, 422, s409="You are the last owner; promote someone else first."),
+)
 def leave_workspace(
     membership: CurrentMembership, db: DbSession, background: BackgroundTasks
 ) -> Response:
@@ -136,13 +177,26 @@ def leave_workspace(
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
-@router.delete("/{workspace_id}/members/{user_id}", status_code=status.HTTP_204_NO_CONTENT)
+@router.delete(
+    "/{workspace_id}/members/{user_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    summary="Remove a member",
+    responses=error_docs(
+        401, 403, 404, 409, 422,
+        s403="Members cannot remove people, and only an owner can remove an owner.",
+        s409="That would remove the last owner.",
+    ),
+)
 def remove_member(
-    user_id: Annotated[int, Path(ge=1)],
+    user_id: Annotated[int, Path(ge=1, le=MAX_ID)],
     actor: MembershipManager,
     db: DbSession,
     background: BackgroundTasks,
 ) -> Response:
+    """Remove someone from the workspace. Owners and admins only; removing an owner takes
+    an owner, and the last owner cannot be removed. Their open WebSockets are closed
+    with 4404.
+    """
     try:
         service.remove_member(db, workspace_id=actor.workspace_id, actor=actor, user_id=user_id)
     except service.NotAMemberError:

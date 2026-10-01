@@ -51,7 +51,9 @@ def test_outsider_cannot_tell_real_from_missing(client, team, team_task, method,
         json=body,
         headers=team.outsider.headers,
     )
-    assert (real.status_code, real.json()) == (missing.status_code, missing.json())
+    # request_id differs per request by design; everything else must match.
+    body = lambda r: {k: v for k, v in r.json().items() if k != "request_id"}  # noqa: E731
+    assert (real.status_code, body(real)) == (missing.status_code, body(missing))
 
 
 def test_outsider_attempts_change_nothing(client, team, team_task):

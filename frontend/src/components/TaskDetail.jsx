@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { errorMessage } from '../api/client.js'
 import { STATUSES, statusLabel } from '../constants.js'
+import { Spinner } from './StatusViews.jsx'
 
 /**
  * Task detail. Editing is local until Save, so a half-typed title never
@@ -12,6 +13,7 @@ export default function TaskDetail({
   comments,
   commentsLoading,
   commentsError,
+  onRetryComments,
   onAddComment,
   onSave,
   onDelete,
@@ -213,11 +215,23 @@ export default function TaskDetail({
         <section className="comments">
           <h3>Comments</h3>
 
-          {commentsError && <p className="alert" role="alert">{commentsError}</p>}
+          {commentsError && (
+            <div className="alert alert-dismissible" role="alert">
+              <span>Couldn't load comments: {commentsError}</span>
+              <button type="button" className="btn-link" onClick={onRetryComments}>
+                Try again
+              </button>
+            </div>
+          )}
 
           <ul className="comment-list">
-            {comments.length === 0 && (
-              <li className="muted">{commentsLoading ? 'Loading comments…' : 'No comments yet.'}</li>
+            {comments.length === 0 && commentsLoading && (
+              <li className="comments-loading">
+                <Spinner label="Loading comments…" /> <span className="muted">Loading comments…</span>
+              </li>
+            )}
+            {comments.length === 0 && !commentsLoading && !commentsError && (
+              <li className="muted">No comments yet. Start the conversation below.</li>
             )}
             {comments.map((comment) => (
               <li key={comment.id} className="comment">

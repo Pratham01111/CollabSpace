@@ -22,7 +22,10 @@ body { margin: 0; }
   border-bottom: 1px solid var(--border);
 }
 .brand { font-weight: 600; color: inherit; text-decoration: none; }
-.header-right { display: flex; align-items: center; gap: 1rem; }
+.header-right { display: flex; align-items: center; gap: 1rem; min-width: 0; }
+.header-right .btn { white-space: nowrap; }
+/* Long addresses truncate instead of widening the page. */
+.header-user { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 22rem; min-width: 0; }
 .app-main { padding: 1.5rem; }
 .page { max-width: 1100px; margin: 0 auto; }
 .board-page { max-width: 1400px; }
@@ -200,7 +203,70 @@ label { font-size: 0.85rem; font-weight: 500; margin-top: 0.75rem; display: bloc
 
 @media (max-width: 800px) {
   .board { grid-template-columns: 1fr; }
+  /* Stacked columns: an empty one need not be tall. */
+  .column { min-height: 0; }
 }
+
+@media (max-width: 560px) {
+  .app-header { padding: 0.75rem 1rem; gap: 0.75rem; }
+  .app-main { padding: 1rem; }
+  .header-right { gap: 0.6rem; }
+  .header-user { max-width: 9rem; font-size: 0.8rem; }
+  .backend-status-label { display: none; }  /* the dot alone still says it */
+  .page-head { flex-wrap: wrap; }
+  .page-head h1 { font-size: 1.3rem; }
+  .board-actions { width: 100%; justify-content: space-between; }
+  .modal-backdrop { padding: 0.75rem 0.5rem; }
+  .modal-body, .comments { padding-left: 1rem; padding-right: 1rem; }
+  .task-facts { grid-template-columns: 1fr 1fr; }
+  .auth-wrap { padding-top: 1.5rem; }
+}
+
+/* ---------- loading / error / empty ---------- */
+.spinner-wrap { display: inline-flex; vertical-align: middle; }
+.spinner {
+  width: 1rem; height: 1rem; border-radius: 50%;
+  border: 2px solid #d4d4d8; border-top-color: var(--accent);
+  animation: spin 0.7s linear infinite;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+.visually-hidden {
+  position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
+  overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0;
+}
+.comments-loading { display: flex; align-items: center; gap: 0.5rem; }
+
+.skeleton {
+  display: block; border-radius: 6px;
+  background: linear-gradient(90deg, #ececef 25%, #f6f6f8 50%, #ececef 75%);
+  background-size: 200% 100%; animation: shimmer 1.3s ease-in-out infinite;
+}
+.skeleton-line { height: 0.8rem; }
+.skeleton-title { height: 1.5rem; width: 14rem; max-width: 70vw; margin: 0.5rem 0; }
+.skeleton-pill { height: 1.1rem; width: 3.5rem; border-radius: 999px; }
+.skeleton-card { display: flex; align-items: center; justify-content: space-between; gap: 1rem; }
+@keyframes shimmer { to { background-position: -200% 0; } }
+@media (prefers-reduced-motion: reduce) {
+  .skeleton, .spinner { animation: none; }
+}
+
+.error-state, .empty-state {
+  background: #fff; border: 1px solid var(--border); border-radius: 10px;
+  padding: 2rem 1.5rem; text-align: center; margin: 1rem 0;
+}
+.error-state { border-color: #fecaca; }
+.error-state-title, .empty-state-title { margin: 0 0 0.35rem; font-weight: 600; }
+.error-state-message { margin: 0 0 1rem; color: #991b1b; font-size: 0.9rem; }
+.error-state-actions { display: flex; gap: 0.5rem; justify-content: center; flex-wrap: wrap; }
+.empty-state .btn { margin-top: 1rem; }
+
+.column-empty {
+  margin: 0; padding: 0.9rem 0.5rem; text-align: center;
+  font-size: 0.8rem; color: #a1a1aa;
+}
+
+.alert-dismissible { display: flex; align-items: center; justify-content: space-between; gap: 0.75rem; }
+.btn-dismiss { border: 0; background: transparent; color: inherit; cursor: pointer; font-size: 0.85rem; padding: 0 0.25rem; }
 
 /* ---------- guest mode ---------- */
 .guest-banner {
