@@ -1,34 +1,75 @@
+# The whole stack: `cp .env.example .env && docker compose up --build`.
+# For local development, start only the data services and run the apps natively:
+#   docker compose up -d postgres redis
+#
+# Every value comes from .env. Required secrets use ${VAR:?}, so compose stops
+# with a clear message instead of starting with an empty one.
+
 services:
-  db:
+  postgres:
     image: postgres:17
-    container_name: collabspace-db
     environment:
-      POSTGRES_USER: collabspace
-      POSTGRES_PASSWORD: collabspace
-      POSTGRES_DB: collabspace
+      POSTGRES_USER: ${POSTGRES_USER:?set POSTGRES_USER in .env}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+      POSTGRES_DB: ${POSTGRES_DB:?set POSTGRES_DB in .env}
     ports:
-      - "5432:5432"
+      # Published for natively-run dev servers and tools; the backend
+      # container reaches it over the compose network.
+      - "${POSTGRES_PORT:-5432}:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U collabspace -d collabspace"]
+      test: ["CMD-SHELL", "pg_isready -U \"$$POSTGRES_USER\" -d \"$$POSTGRES_DB\""]
       interval: 5s
       timeout: 5s
       retries: 10
 
-  # Distributes realtime events between backend instances. Holds no data:
-  # Postgres is the source of truth, so nothing here needs persisting.
+  # Distributes realtime events and presence between backend processes. Holds
+  # no data: Postgres is the source of truth, so nothing here is persisted.
   redis:
     image: redis:7-alpine
-    container_name: collabspace-redis
     command: ["redis-server", "--save", "", "--appendonly", "no"]
     ports:
-      - "6379:6379"
+      - "${REDIS_PORT:-6379}:6379"
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 5s
       timeout: 5s
       retries: 10
+
+  backend:
+    build: ./backend
+    environment:
+      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+      REDIS_URL: redis://redis:6379/0
+      JWT_SECRET_KEY: ${JWT_SECRET_KEY:?set JWT_SECRET_KEY in .env}
+      ACCESS_TOKEN_EXPIRE_MINUTES: ${ACCESS_TOKEN_EXPIRE_MINUTES:-60}
+      CORS_ORIGINS: ${CORS_ORIGINS:-}
+      # Worker processes. More than one is safe: they share state via Redis.
+      WEB_CONCURRENCY: ${BACKEND_WORKERS:-2}
+    ports:
+      # Optional direct access (API docs at /docs). The frontend does not use
+      # it; it goes through its own nginx.
+      - "${BACKEND_PORT:-8000}:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+
+  frontend:
+    build:
+      context: ./frontend
+      args:
+        VITE_API_BASE_URL: /api
+        VITE_ENABLE_GUEST: ${VITE_ENABLE_GUEST:-false}
+    ports:
+      - "${FRONTEND_PORT:-8080}:80"
+    depends_on:
+      backend:
+        condition: service_healthy
+    restart: unless-stopped
 
 volumes:
   pgdata:

@@ -5,6 +5,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.auth.routes import router as auth_router
 from app.comments.routes import router as comments_router
+from app.config import settings
 from app.realtime.bus import bus
 from app.realtime.routes import router as realtime_router
 from app.tasks.routes import tasks_router, workspace_tasks_router
@@ -24,7 +25,7 @@ app = FastAPI(title="CollabSpace API", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173"],
+    allow_origins=settings.cors_origin_list,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

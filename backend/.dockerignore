@@ -1,0 +1,17 @@
+# Local environments and caches
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# Secrets and local config come from the environment, never the image
+.env
+.env.*
+
+# Not needed to run the app
+tests/
+pytest.ini
+requirements-dev.txt
+Dockerfile
+.dockerignore
+.gitignore

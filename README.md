@@ -2,6 +2,37 @@
 
 A real-time collaborative workspace. Built in phases.
 
+## Quick start (Docker)
+
+```bash
+cp .env.example .env
+docker compose up --build
+```
+
+Open http://localhost:8080. That runs everything: Postgres, Redis, the backend
+(migrations are applied on startup) and the frontend. API docs are at
+http://localhost:8000/docs.
+
+| Service | Image | Notes |
+| --- | --- | --- |
+| `postgres` | `postgres:17` | data in the `pgdata` volume |
+| `redis` | `redis:7-alpine` | pub/sub only, nothing persisted |
+| `backend` | `backend/Dockerfile` | runs `alembic upgrade head`, then uvicorn with `BACKEND_WORKERS` processes (default 2), as a non-root user |
+| `frontend` | `frontend/Dockerfile` | Vite build served by nginx, which also proxies `/api/*` (WebSocket included) to the backend |
+
+The browser only ever talks to the frontend's origin. nginx forwards `/api/...`
+to the backend, so there is no CORS and no backend address baked into the
+JavaScript. Every setting and secret comes from `.env`. Compose refuses to start
+if `POSTGRES_*` or `JWT_SECRET_KEY` is missing, and nothing is hardcoded in the
+Dockerfiles or the compose file. **Change `JWT_SECRET_KEY`** for anything beyond
+local use. If `POSTGRES_PASSWORD` contains URL-special characters
+(`@ : / ? #`), percent-encode it, since it is placed into `DATABASE_URL`.
+
+```bash
+docker compose down        # stop, keep data
+docker compose down -v     # stop and delete the database volume
+```
+
 - **Phase 1 — Project setup:** FastAPI backend and Vite/React frontend running independently, frontend calling `GET /health`.
 - **Phase 2 — Database:** PostgreSQL, SQLAlchemy models, Alembic migrations. No API routes, no auth yet.
 - **Phase 3 — Authentication:** register, login, and a JWT-protected `/auth/me`.
@@ -17,10 +48,12 @@ A real-time collaborative workspace. Built in phases.
 
 ## Database
 
-PostgreSQL and Redis run in Docker:
+For local development, run just the data services in Docker and the apps
+natively (below). This needs the root `.env` too, for the Postgres credentials:
 
 ```bash
-docker compose up -d
+cp .env.example .env   # once
+docker compose up -d postgres redis
 ```
 
 Redis only passes realtime events between backend instances. It stores nothing
@@ -66,7 +99,7 @@ Deleting a user cascades to their memberships and comments, but their tasks surv
 cd backend
 python3 -m venv .venv
 source .venv/bin/activate
-pip install -r requirements.txt
+pip install -r requirements-dev.txt   # app + test tooling
 uvicorn app.main:app --reload --port 8000
 ```
 
@@ -314,9 +347,9 @@ VITE_API_BASE_URL=http://localhost:8001 npx vite --port 5174
 
 Log in on http://localhost:5173 and on http://localhost:5174 as two members of
 the same workspace. An edit in one window appears in the other, even though they
-are connected to different servers. Note that the CORS allow-list in
-`app/main.py` only contains `http://localhost:5173`, so add the second origin
-while testing.
+are connected to different servers. The second frontend runs on another origin,
+so add it to the allow-list first:
+`CORS_ORIGINS=http://localhost:5173,http://localhost:5174` in `backend/.env`.
 
 ### Tests
 
@@ -342,7 +375,7 @@ Every test leaves the app's connection manager empty; a fixture fails any test
 that leaks a socket. bcrypt runs at cost 4 under test, since nothing depends on
 the work factor and cost 12 made the suite take minutes.
 
-The tests need the Postgres from `docker compose up -d`. They run against a
+The tests need the Postgres from `docker compose up -d postgres redis`. They run against a
 separate `<database>_test` database, created on first run, rebuilt each session
 and emptied after every test. `tests/conftest.py` points `DATABASE_URL` at it
 before anything imports the app. As a backstop, the fixtures refuse to drop or

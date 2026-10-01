@@ -1,6 +1,8 @@
 import axios from 'axios'
 
-const baseURL = import.meta.env.VITE_API_BASE_URL ?? 'http://localhost:8000'
+// Absolute (http://localhost:8000 in dev) or a same-origin path (/api behind
+// the Docker stack's nginx). Both work for REST and for the WebSocket.
+const baseURL = (import.meta.env.VITE_API_BASE_URL ?? 'http://localhost:8000').replace(/\/$/, '')
 
 export const api = axios.create({ baseURL })
 
@@ -37,7 +39,10 @@ export function notifyUnauthorized() {
 
 /** ws(s):// URL on the API host, carrying the token the server expects. */
 export function socketUrl(path) {
-  const url = new URL(path, baseURL)
+  // Join rather than resolve: new URL('/ws/…', 'http://host/api') would drop
+  // the /api prefix. Resolving against the page fills in host and scheme
+  // when the base is a bare path.
+  const url = new URL(`${baseURL}${path}`, window.location.href)
   url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:'
   url.searchParams.set('token', getToken() ?? '')
   return url.toString()

@@ -1,0 +1,11 @@
+node_modules/
+dist/
+
+# Local config; build-time values come in as build args instead
+.env
+.env.*
+
+.DS_Store
+Dockerfile
+.dockerignore
+.gitignore

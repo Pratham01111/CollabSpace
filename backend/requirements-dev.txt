@@ -1,0 +1,6 @@
+# Everything the app needs, plus the test tooling (kept out of the production image).
+-r requirements.txt
+
+# Phase 10 — tests (pytest; httpx is what FastAPI's TestClient runs on)
+pytest==9.1.1
+httpx==0.28.1
