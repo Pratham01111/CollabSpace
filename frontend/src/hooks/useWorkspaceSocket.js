@@ -21,8 +21,9 @@ function backoffDelay(attempt) {
  * Keeps a WebSocket open to one workspace and hands each server event to
  * `onEvent`.
  *
- * `onConnected` fires on every successful (re)connect. Events sent while the
- * socket was down are gone, so that is the caller's cue to resync over REST.
+ * `onConnected(message)` fires on every successful (re)connect, with the
+ * server's "connected" message (which carries who is online). Events sent
+ * while the socket was down are gone, so that is the caller's cue to resync.
  * `onLostAccess` fires if the server says the user is no longer a member.
  *
  * Returns `{ status, retry }`, where status is one of
@@ -68,7 +69,7 @@ export default function useWorkspaceSocket(workspaceId, { onEvent, onConnected, 
         if (event.type === 'connected') {
           attempt = 0
           setStatus('connected')
-          handlers.current.onConnected?.()
+          handlers.current.onConnected?.(event)
           return
         }
         handlers.current.onEvent?.(event)

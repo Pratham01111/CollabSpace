@@ -6,7 +6,8 @@ from sqlalchemy.orm import Session
 from app.auth.dependencies import CurrentUser
 from app.database import get_db
 from app.database.models import WorkspaceMember
-from app.realtime.manager import CLOSE_WORKSPACE_NOT_FOUND, manager
+from app.realtime.bus import bus
+from app.realtime.manager import CLOSE_WORKSPACE_NOT_FOUND
 from app.workspaces import service
 from app.workspaces.dependencies import CurrentMembership, MembershipManager
 from app.workspaces.schemas import (
@@ -43,9 +44,10 @@ def _workspace_response(membership: WorkspaceMember) -> WorkspaceResponse:
 def _disconnect_former_member(background: BackgroundTasks, workspace_id: int, user_id: int) -> None:
     """Close the live sockets of someone who is no longer a member, or they
     would keep receiving the workspace's events. Queued, so it only happens
-    once the removal has committed."""
+    once the removal has committed; sent via the bus, as their sockets may be
+    on another instance."""
     background.add_task(
-        manager.disconnect_user, workspace_id, user_id, CLOSE_WORKSPACE_NOT_FOUND, "Workspace not found."
+        bus.disconnect_user, workspace_id, user_id, CLOSE_WORKSPACE_NOT_FOUND, "Workspace not found."
     )
 
 

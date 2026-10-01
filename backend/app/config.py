@@ -14,6 +14,10 @@ class Settings(BaseSettings):
 
     database_url: str = "postgresql+psycopg://collabspace:collabspace@localhost:5432/collabspace"
 
+    # Pub/sub that fans realtime events out across backend instances. Set it
+    # empty (REDIS_URL=) to run a single instance on in-memory delivery only.
+    redis_url: str | None = "redis://localhost:6379/0"
+
     # Echo every SQL statement to stdout. Useful while learning the ORM.
     sql_echo: bool = False
 

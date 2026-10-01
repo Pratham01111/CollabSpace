@@ -9,6 +9,7 @@ import {
 } from '../api/client.js'
 import { STATUSES, statusLabel } from '../constants.js'
 import ConnectionStatus from '../components/ConnectionStatus.jsx'
+import OnlineNow from '../components/OnlineNow.jsx'
 import TaskCard from '../components/TaskCard.jsx'
 import TaskDetail from '../components/TaskDetail.jsx'
 import useWorkspaceSocket from '../hooks/useWorkspaceSocket.js'
@@ -70,6 +71,10 @@ export default function Workspace() {
   const [commentsError, setCommentsError] = useState(null)
   // Bumped on reconnect to re-read the open thread, which may have missed events.
   const [commentsReload, setCommentsReload] = useState(0)
+  // Who is online: user id -> { id, email }. Seeded by each (re)connect, then
+  // kept current by USER_JOINED / USER_LEFT. Ephemeral; the server never stores it.
+  const [online, setOnline] = useState(() => new Map())
+  const [myUserId, setMyUserId] = useState(null)
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -100,6 +105,17 @@ export default function Workspace() {
       case 'TASK_DELETED':
         setTaskList((current) => removeTask(current, event.task.id))
         break
+      case 'USER_JOINED':
+        setOnline((current) => new Map(current).set(event.user.id, event.user))
+        break
+      case 'USER_LEFT':
+        setOnline((current) => {
+          if (!current.has(event.user.id)) return current
+          const next = new Map(current)
+          next.delete(event.user.id)
+          return next
+        })
+        break
       case 'COMMENT_CREATED': {
         const { comment } = event
         setCommentsByTask((current) =>
@@ -118,7 +134,9 @@ export default function Workspace() {
   // Anything broadcast while the socket was down was missed, so each
   // (re)connect re-reads the board. This also covers the gap between the
   // first REST fetch and the socket opening.
-  const resync = useCallback(async () => {
+  const resync = useCallback(async (hello) => {
+    setMyUserId(hello.user_id)
+    setOnline(new Map(hello.online_users.map((u) => [u.id, u])))
     setCommentsReload((n) => n + 1)
     try {
       setTaskList(await tasksApi.list(id))
@@ -283,6 +301,14 @@ export default function Workspace() {
           <p className="muted">
             {workspace.members.length} member{workspace.members.length === 1 ? '' : 's'} ·
             you are {workspace.my_role}
+            {liveStatus === 'connected' && (
+              <>
+                {' · '}
+                <span className="online-count">
+                  {online.size} user{online.size === 1 ? '' : 's'} online
+                </span>
+              </>
+            )}
           </p>
         </div>
         <div className="board-actions">
@@ -290,6 +316,13 @@ export default function Workspace() {
           <button type="button" className="btn btn-quiet" onClick={load}>Refresh</button>
         </div>
       </div>
+
+      <OnlineNow
+        users={[...online.values()]}
+        myUserId={myUserId}
+        connected={liveStatus === 'connected'}
+        displayName={displayName}
+      />
 
       {error && <p className="alert" role="alert">{error}</p>}
 

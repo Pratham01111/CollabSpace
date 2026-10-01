@@ -2,7 +2,8 @@
 
 Everything here runs on the event loop, so reads and writes of ``connections``
 between two ``await``s cannot interleave with another coroutine; no lock needed.
-State is per process — running more than one worker would need a shared broker.
+State is per process: this only knows the sockets connected to this instance.
+``app.realtime.bus`` is what reaches the sockets on other instances.
 """
 
 from typing import Any

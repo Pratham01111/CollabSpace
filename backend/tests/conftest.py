@@ -1,21 +1,39 @@
 """Test setup: a separate Postgres database, rebuilt per run, emptied per test.
 
 The concurrency tests need real Postgres row locking, so SQLite will not do.
-DATABASE_URL is pointed at ``<dev database>_test`` *before* the app is
-imported, so the app's engine never touches development data.
+
+Order matters here. ``app.config`` builds its settings the moment it is first
+imported, and the engine is created from them, so the overrides below must be
+in the environment before *anything* imports ``app``. This file therefore
+reads the development values straight from the environment and ``.env``,
+without going through ``app.config``.
 """
 
 import os
+from pathlib import Path
 
 import pytest
+from dotenv import dotenv_values
 from sqlalchemy import create_engine, text
 from sqlalchemy.engine import make_url
 
-from app.config import Settings
+_env_file = dotenv_values(Path(__file__).resolve().parent.parent / ".env")
 
-_dev_url = make_url(Settings().database_url)
+
+def _setting(name: str, default: str) -> str:
+    return os.environ.get(name) or _env_file.get(name) or default
+
+
+_dev_url = make_url(
+    _setting("DATABASE_URL", "postgresql+psycopg://collabspace:collabspace@localhost:5432/collabspace")
+)
 TEST_DATABASE_URL = _dev_url.set(database=f"{_dev_url.database}_test")
 os.environ["DATABASE_URL"] = TEST_DATABASE_URL.render_as_string(hide_password=False)
+
+# The app under test runs single-instance, on in-memory delivery, so the suite
+# does not need Redis. The bus tests build their own instances against this URL.
+REDIS_URL = _setting("REDIS_URL", "redis://localhost:6379/0")
+os.environ["REDIS_URL"] = ""
 
 
 def _ensure_test_database() -> None:
@@ -40,8 +58,18 @@ from app.database import models  # noqa: E402, F401  (registers every table)
 from app.main import app  # noqa: E402
 
 
+def _refuse_unless_test_database() -> None:
+    """Last line of defence: these fixtures drop and truncate every table."""
+    if not (engine.url.database or "").endswith("_test"):
+        raise RuntimeError(
+            f"Refusing to run tests against {engine.url.database!r}: "
+            "the app was configured before the test database override applied."
+        )
+
+
 @pytest.fixture(scope="session", autouse=True)
 def schema():
+    _refuse_unless_test_database()
     Base.metadata.drop_all(engine)
     Base.metadata.create_all(engine)
     yield
@@ -51,6 +79,7 @@ def schema():
 @pytest.fixture(autouse=True)
 def clean_tables():
     yield
+    _refuse_unless_test_database()
     tables = ", ".join(t.name for t in Base.metadata.sorted_tables)
     with engine.begin() as conn:
         conn.execute(text(f"TRUNCATE {tables} RESTART IDENTITY CASCADE"))

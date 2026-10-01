@@ -12,14 +12,19 @@ A real-time collaborative workspace. Built in phases.
 - **Phase 8 — Real-time sync:** task create/update/delete pushed to every open board, with reconnection.
 - **Phase 9 — Comments:** persisted task comments, delivered live.
 - **Phase 10 — Concurrency:** version-checked task updates; a stale edit is a 409, never a silent overwrite.
+- **Phase 11 — Redis:** realtime events fan out across backend instances via Redis pub/sub.
+- **Presence:** live "Online now" per workspace, correct across tabs and instances.
 
 ## Database
 
-PostgreSQL runs in Docker:
+PostgreSQL and Redis run in Docker:
 
 ```bash
-docker compose up -d db
+docker compose up -d
 ```
+
+Redis only passes realtime events between backend instances. It stores nothing
+(persistence is switched off), and Postgres remains the source of truth.
 
 Connection string lives in `backend/.env` (see `backend/.env.example`):
 
@@ -212,7 +217,7 @@ HTTP 403):
 | `4404` | no such workspace, or not a member (deliberately the same, as over REST); also sent to a member's open sockets when they leave or are removed |
 
 On success the server sends
-`{"type": "connected", "workspace_id", "user_id", "connected_user_ids"}`, and it
+`{"type": "connected", "workspace_id", "user_id", "online_users"}`, and it
 answers a text `ping` with `{"type": "pong"}`.
 
 #### Events
@@ -230,6 +235,8 @@ workspace, including the person who made it:
 | `TASK_UPDATED` | `PATCH /tasks/{id}` (not for an empty body, which changes nothing) |
 | `TASK_DELETED` | `DELETE /tasks/{id}`; `task` is the task as it was just before deletion |
 | `COMMENT_CREATED` | `POST /tasks/{id}/comments`; carries `comment` instead of `task` |
+| `USER_JOINED` | a user's first connection to the workspace opens; `{"user": {"id", "email"}}`, not sent to that user |
+| `USER_LEFT` | a user's last connection to the workspace closes; `{"user": {"id", ...}}` |
 
 `task` is exactly what the REST endpoint returns. Events are queued as background
 tasks only once the service call, which commits, has returned, and FastAPI runs
@@ -243,8 +250,73 @@ websocat "ws://localhost:8000/ws/workspaces/1?token=$TOKEN"
 ```
 
 A user may have several sockets open on one workspace (say, two tabs), and all of
-them receive events. Connections are held in process memory, so this works only
-with a single worker.
+them receive events.
+
+#### Presence
+
+`online_users` in the `connected` message is everyone online in the workspace
+right now, including you, as `[{"id", "email"}]`. After that, `USER_JOINED` and
+`USER_LEFT` keep it current. A user counts once however many tabs, or servers,
+they are connected through. `USER_JOINED` fires on their first connection and
+`USER_LEFT` only when their last one closes.
+
+Presence is ephemeral and never touches Postgres. With Redis, each workspace has
+a sorted set `presence:{id}` holding one member per user per server,
+`"{user_id}:{instance_id}"`, scored with an expiry time:
+
+- Someone is online while any of their members is unexpired, so a user on
+  server 1 shows as online to a user on server 2.
+- Each server refreshes its own members every 10s, and members lapse after 30s.
+  If a server dies, its users drop out on their own, and the next sweep by a
+  server still serving that workspace sends `USER_LEFT` for them. The sweep uses
+  the result of `ZREM` to decide which server sends it, so it goes out once.
+- Each add or remove runs in a `MULTI` with a read of what remains, so "first
+  connection" and "last connection" are decided atomically.
+
+Each server reconciles the users it has sockets for with the users it has
+registered, rather than reacting to individual connects and disconnects. That
+way a normal close, a removal from the workspace, a failed send, and a reset
+after a Redis outage all end up in the same place. Without Redis, presence is
+the local connection manager.
+
+#### Multiple instances (Redis)
+
+Each instance only holds its own sockets. To reach everyone, every event is
+published to the Redis channel `workspace:{id}`. Each instance subscribes to
+`workspace:*` at startup and delivers what it receives to its local sockets,
+including events it published itself. That gives one delivery path, so no
+duplicates. If Alice is on server 1 and Bob on server 2, an edit on server 1 goes
+Redis → server 2 → Bob. Closing a removed member's sockets travels the same way,
+since those sockets may be on another server.
+
+`REDIS_URL` defaults to `redis://localhost:6379/0`. Set it empty (`REDIS_URL=`)
+to run one instance with in-memory delivery only.
+
+If Redis goes down, the app falls back to single-instance behaviour instead of
+going silent: a publish that fails, or one made while the instance has no
+subscription, is delivered to that instance's own sockets directly. The
+subscriber reconnects with backoff. Once it is back, it closes its sockets with
+`1012` (service restart), because events sent during the gap are lost. Clients
+treat that like any dropped connection: they reconnect and re-read from
+Postgres.
+
+To try it locally, run two instances on the same Postgres and Redis, and point a
+second frontend at the second instance:
+
+```bash
+# backend, two terminals
+uvicorn app.main:app --port 8000
+uvicorn app.main:app --port 8001
+
+# frontend, second terminal
+VITE_API_BASE_URL=http://localhost:8001 npx vite --port 5174
+```
+
+Log in on http://localhost:5173 and on http://localhost:5174 as two members of
+the same workspace. An edit in one window appears in the other, even though they
+are connected to different servers. Note that the CORS allow-list in
+`app/main.py` only contains `http://localhost:5173`, so add the second origin
+while testing.
 
 ### Tests
 
@@ -255,9 +327,15 @@ pytest
 
 The tests need the Postgres from `docker compose up -d`. They run against a
 separate `<database>_test` database, created on first run, rebuilt each session
-and emptied after every test, so development data is never touched. The
+and emptied after every test. `tests/conftest.py` points `DATABASE_URL` at it
+before anything imports the app. As a backstop, the fixtures refuse to drop or
+truncate anything in a database whose name does not end in `_test`. The
 concurrency tests rely on real Postgres row locking, so they cannot run on
 SQLite.
+
+The app under test runs with Redis switched off. The event-bus tests start two
+buses with separate connection managers, standing in for two servers, against
+the real Redis, and are skipped if it is not running.
 
 ## Frontend
 
@@ -297,6 +375,11 @@ can arrive twice, once in the REST response to your own change and once in its
 broadcast, so cards are de-duplicated by id and an update never replaces a newer
 `version` with an older one. If someone else edits the task you have open, your
 unsaved edits are kept.
+
+Under the header, **Online now** lists everyone with the workspace open, you
+first, and the header line shows "*N* users online". Both are seeded on every
+(re)connect and updated live. While disconnected they show as unknown rather
+than a stale count.
 
 The header shows **Connected / Reconnecting… / Offline**. A dropped connection
 retries with jittered exponential backoff (about 1s, 2s, 4s … capped at 30s, six

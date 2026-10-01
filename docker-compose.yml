@@ -16,5 +16,19 @@ services:
       timeout: 5s
       retries: 10
 
+  # Distributes realtime events between backend instances. Holds no data:
+  # Postgres is the source of truth, so nothing here needs persisting.
+  redis:
+    image: redis:7-alpine
+    container_name: collabspace-redis
+    command: ["redis-server", "--save", "", "--appendonly", "no"]
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
 volumes:
   pgdata:

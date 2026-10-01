@@ -11,7 +11,7 @@ from enum import StrEnum
 from fastapi import BackgroundTasks
 
 from app.database.models import Task
-from app.realtime.manager import manager
+from app.realtime.bus import bus
 from app.tasks.schemas import TaskResponse
 
 
@@ -31,6 +31,6 @@ def task_event(event_type: EventType, task: Task | TaskResponse) -> dict:
 
 
 def queue_broadcast(background: BackgroundTasks, workspace_id: int, event: dict) -> None:
-    """Broadcast ``event`` once the response has gone out. Call only after the
-    commit it describes has succeeded."""
-    background.add_task(manager.broadcast_to_workspace, workspace_id, event)
+    """Broadcast ``event`` once the response has gone out, to every instance
+    (via Redis). Call only after the commit it describes has succeeded."""
+    background.add_task(bus.broadcast, workspace_id, event)
