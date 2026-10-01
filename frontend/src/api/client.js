@@ -30,6 +30,19 @@ export function setUnauthorizedHandler(handler) {
   onUnauthorized = handler
 }
 
+/** For non-axios callers (the WebSocket) that learn the token was rejected. */
+export function notifyUnauthorized() {
+  onUnauthorized?.()
+}
+
+/** ws(s):// URL on the API host, carrying the token the server expects. */
+export function socketUrl(path) {
+  const url = new URL(path, baseURL)
+  url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:'
+  url.searchParams.set('token', getToken() ?? '')
+  return url.toString()
+}
+
 api.interceptors.response.use(
   (response) => response,
   (error) => {
@@ -38,7 +51,7 @@ api.interceptors.response.use(
     // A 401 from the login endpoint means "wrong password", not "session
     // expired" — that one belongs to the form, not the global handler.
     const isLoginAttempt = url.includes('/auth/login') || url.includes('/auth/register')
-    if (status === 401 && !isLoginAttempt && onUnauthorized) onUnauthorized()
+    if (status === 401 && !isLoginAttempt) notifyUnauthorized()
     return Promise.reject(error)
   },
 )

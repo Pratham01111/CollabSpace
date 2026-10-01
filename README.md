@@ -8,6 +8,8 @@ A real-time collaborative workspace. Built in phases.
 - **Phase 4 — Workspaces:** create/list/read workspaces and manage membership.
 - **Phase 5 — Tasks:** board CRUD scoped to a workspace.
 - **Phase 6 — Frontend:** login, workspace dashboard, and a Kanban board. No WebSockets yet.
+- **Phase 7 — WebSockets:** an authenticated per-workspace connection, tracked server-side.
+- **Phase 8 — Real-time sync:** task create/update/delete pushed to every open board, with reconnection.
 
 ## Database
 
@@ -154,6 +156,56 @@ Tokens are HS256, expire after `ACCESS_TOKEN_EXPIRE_MINUTES`, and carry only the
 user id in `sub`. There is no refresh token or logout yet — a token is valid
 until it expires.
 
+### WebSockets
+
+`WS /ws/workspaces/{id}?token=<access_token>` opens a live channel to one workspace.
+The token goes in the query string because browsers cannot set headers on a
+WebSocket. It is checked exactly as the REST routes check it, and the caller must
+be a member of the workspace.
+
+A rejected connection is accepted and then closed immediately, so the client
+receives a close code and reason (a refusal during the handshake arrives as a bare
+HTTP 403):
+
+| Close code | Meaning |
+| --- | --- |
+| `4401` | missing, invalid or expired token, or the user no longer exists |
+| `4404` | no such workspace, or not a member (deliberately the same, as over REST); also sent to a member's open sockets when they leave or are removed |
+
+On success the server sends
+`{"type": "connected", "workspace_id", "user_id", "connected_user_ids"}`, and it
+answers a text `ping` with `{"type": "pong"}`.
+
+#### Events
+
+Every successful task write is broadcast to everyone connected to that task's
+workspace, including the person who made it:
+
+```json
+{ "type": "TASK_UPDATED", "task": { "id": 42, "title": "Build API", "status": "DONE", "version": 3, ... } }
+```
+
+| Type | Sent after |
+| --- | --- |
+| `TASK_CREATED` | `POST /workspaces/{id}/tasks` |
+| `TASK_UPDATED` | `PATCH /tasks/{id}` (not for an empty body, which changes nothing) |
+| `TASK_DELETED` | `DELETE /tasks/{id}`; `task` is the task as it was just before deletion |
+
+`task` is exactly what the REST endpoint returns. Events are queued as background
+tasks only once the service call, which commits, has returned, and FastAPI runs
+background tasks only when the handler succeeds. A request that fails validation,
+permission checks or the commit therefore never produces an event, so clients
+never see state that is not in the database.
+
+```bash
+# websocat, or any WebSocket client
+websocat "ws://localhost:8000/ws/workspaces/1?token=$TOKEN"
+```
+
+A user may have several sockets open on one workspace (say, two tabs), and all of
+them receive events. Connections are held in process memory, so this works only
+with a single worker.
+
 ## Frontend
 
 ```bash
@@ -185,6 +237,20 @@ user id, so the name is resolved client-side from the member list that
 Drag a card between columns, or change its status in the detail view; either way
 it is a `PATCH /tasks/{id}`. The detail view also edits the title and
 description, and deletes the task behind a confirm step.
+
+The board stays live over the workspace WebSocket. Other people's changes appear
+without a reload: events are applied to local state, never by refetching. A task
+can arrive twice, once in the REST response to your own change and once in its
+broadcast, so cards are de-duplicated by id and an update never replaces a newer
+`version` with an older one. If someone else edits the task you have open, your
+unsaved edits are kept.
+
+The header shows **Connected / Reconnecting… / Offline**. A dropped connection
+retries with jittered exponential backoff (about 1s, 2s, 4s … capped at 30s, six
+attempts) and then shows Offline with a Retry button. Losing the network shows
+Offline straight away and reconnects as soon as it is back. Events sent while
+disconnected are lost, so every reconnect re-reads the task list once. A rejected
+token logs you out, and removal from the workspace stops retrying.
 
 Comments are **UI only** — they live in browser state and disappear on reload.
 The backend for them arrives in Phase 9, and the panel says so on screen.

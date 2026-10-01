@@ -1,10 +1,11 @@
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, Response, status
+from fastapi import APIRouter, BackgroundTasks, Depends, Response, status
 from sqlalchemy.orm import Session
 
 from app.auth.dependencies import CurrentUser
 from app.database import get_db
+from app.realtime.events import EventType, queue_broadcast, task_event
 from app.tasks import service
 from app.tasks.dependencies import CurrentTask
 from app.tasks.schemas import TaskCreate, TaskResponse, TaskUpdate
@@ -35,6 +36,7 @@ def create_task(
     membership: CurrentMembership,
     current_user: CurrentUser,
     db: DbSession,
+    background: BackgroundTasks,
 ) -> TaskResponse:
     task = service.create_task(
         db,
@@ -45,17 +47,29 @@ def create_task(
         status=payload.status,
         position=payload.position,
     )
-    return TaskResponse.model_validate(task)
+    response = TaskResponse.model_validate(task)
+    queue_broadcast(background, task.workspace_id, task_event(EventType.TASK_CREATED, response))
+    return response
 
 
 @tasks_router.patch("/{task_id}", response_model=TaskResponse)
-def update_task(payload: TaskUpdate, task: CurrentTask, db: DbSession) -> TaskResponse:
+def update_task(
+    payload: TaskUpdate, task: CurrentTask, db: DbSession, background: BackgroundTasks
+) -> TaskResponse:
     """Partial update. Any member of the workspace may edit any task in it."""
     changes = payload.model_dump(exclude_unset=True)
-    return TaskResponse.model_validate(service.update_task(db, task, changes))
+    response = TaskResponse.model_validate(service.update_task(db, task, changes))
+    # An empty body changes nothing and commits nothing, so there is no news.
+    if changes:
+        queue_broadcast(background, task.workspace_id, task_event(EventType.TASK_UPDATED, response))
+    return response
 
 
 @tasks_router.delete("/{task_id}", status_code=status.HTTP_204_NO_CONTENT)
-def delete_task(task: CurrentTask, db: DbSession) -> Response:
+def delete_task(task: CurrentTask, db: DbSession, background: BackgroundTasks) -> Response:
+    # Snapshot before the row goes; the event carries the task as it last was.
+    event = task_event(EventType.TASK_DELETED, task)
+    workspace_id = task.workspace_id
     service.delete_task(db, task)
+    queue_broadcast(background, workspace_id, event)
     return Response(status_code=status.HTTP_204_NO_CONTENT)

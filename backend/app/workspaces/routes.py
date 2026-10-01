@@ -1,11 +1,12 @@
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException, Path, Response, status
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Path, Response, status
 from sqlalchemy.orm import Session
 
 from app.auth.dependencies import CurrentUser
 from app.database import get_db
 from app.database.models import WorkspaceMember
+from app.realtime.manager import CLOSE_WORKSPACE_NOT_FOUND, manager
 from app.workspaces import service
 from app.workspaces.dependencies import CurrentMembership, MembershipManager
 from app.workspaces.schemas import (
@@ -36,6 +37,15 @@ def _workspace_response(membership: WorkspaceMember) -> WorkspaceResponse:
         name=membership.workspace.name,
         created_at=membership.workspace.created_at,
         my_role=membership.role,
+    )
+
+
+def _disconnect_former_member(background: BackgroundTasks, workspace_id: int, user_id: int) -> None:
+    """Close the live sockets of someone who is no longer a member, or they
+    would keep receiving the workspace's events. Queued, so it only happens
+    once the removal has committed."""
+    background.add_task(
+        manager.disconnect_user, workspace_id, user_id, CLOSE_WORKSPACE_NOT_FOUND, "Workspace not found."
     )
 
 
@@ -108,7 +118,9 @@ def add_member(
 # ordered, and "/members/{user_id}" would match the literal path "/members/me"
 # first and then fail int conversion with a 422 — it does not fall through.
 @router.delete("/{workspace_id}/members/me", status_code=status.HTTP_204_NO_CONTENT)
-def leave_workspace(membership: CurrentMembership, db: DbSession) -> Response:
+def leave_workspace(
+    membership: CurrentMembership, db: DbSession, background: BackgroundTasks
+) -> Response:
     """Leave a workspace. Open to any member, whatever their role."""
     try:
         service.leave_workspace(db, membership)
@@ -118,6 +130,7 @@ def leave_workspace(membership: CurrentMembership, db: DbSession) -> Response:
             "You are the last owner. Promote another member to owner before leaving.",
         ) from None
 
+    _disconnect_former_member(background, membership.workspace_id, membership.user_id)
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
@@ -126,6 +139,7 @@ def remove_member(
     user_id: Annotated[int, Path(ge=1)],
     actor: MembershipManager,
     db: DbSession,
+    background: BackgroundTasks,
 ) -> Response:
     try:
         service.remove_member(db, workspace_id=actor.workspace_id, actor=actor, user_id=user_id)
@@ -141,4 +155,5 @@ def remove_member(
             "Cannot remove the last owner. Promote another member to owner first.",
         ) from None
 
+    _disconnect_former_member(background, actor.workspace_id, user_id)
     return Response(status_code=status.HTTP_204_NO_CONTENT)

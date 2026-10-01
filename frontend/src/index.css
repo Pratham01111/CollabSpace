@@ -46,6 +46,15 @@ body { margin: 0; }
 .backend-status.is-ok .dot { background: #16a34a; }
 .backend-status.is-down .dot { background: var(--danger); }
 
+.connection-status { display: inline-flex; align-items: center; gap: 0.4rem; font-size: 0.8rem; color: var(--muted); }
+.connection-status .dot { width: 8px; height: 8px; border-radius: 50%; background: #a1a1aa; }
+.connection-status.is-connected .dot { background: #16a34a; }
+.connection-status.is-connecting .dot,
+.connection-status.is-reconnecting .dot { background: #d97706; animation: pulse 1.2s ease-in-out infinite; }
+.connection-status.is-offline .dot { background: var(--danger); }
+@keyframes pulse { 50% { opacity: 0.35; } }
+.board-actions { display: flex; align-items: center; gap: 0.75rem; }
+
 /* ---------- primitives ---------- */
 .card { background: #fff; border: 1px solid var(--border); border-radius: 8px; padding: 1rem; }
 .btn {

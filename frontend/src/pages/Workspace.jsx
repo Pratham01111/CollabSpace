@@ -3,12 +3,32 @@ import { Link, useParams } from 'react-router-dom'
 import { errorMessage, tasks as tasksApi, workspaces as workspacesApi } from '../api/client.js'
 import { useAuth } from '../context/AuthContext.jsx'
 import { STATUSES, statusLabel } from '../constants.js'
+import ConnectionStatus from '../components/ConnectionStatus.jsx'
 import TaskCard from '../components/TaskCard.jsx'
 import TaskDetail from '../components/TaskDetail.jsx'
+import useWorkspaceSocket from '../hooks/useWorkspaceSocket.js'
 
 /** The API identifies people by id; the member list is what turns one into a name. */
 function displayName(email) {
   return email ? email.split('@')[0] : 'Unknown'
+}
+
+// The same task can reach us twice, via the REST response to our own change
+// and via the broadcast of it, in either order. Every write to the list goes
+// through these, so a task is never added twice and an older version never
+// overwrites a newer one.
+function addTask(list, task) {
+  return list.some((t) => t.id === task.id) ? list : [...list, task]
+}
+
+function updateTask(list, task) {
+  // An update for a task we do not have (say, one we just deleted) is not a
+  // reason to bring it back.
+  return list.map((t) => (t.id === task.id && task.version >= t.version ? task : t))
+}
+
+function removeTask(list, taskId) {
+  return list.filter((t) => t.id !== taskId)
 }
 
 export default function Workspace() {
@@ -47,6 +67,40 @@ export default function Workspace() {
     load()
   }, [load])
 
+  const handleEvent = useCallback((event) => {
+    switch (event.type) {
+      case 'TASK_CREATED':
+        setTaskList((current) => addTask(current, event.task))
+        break
+      case 'TASK_UPDATED':
+        setTaskList((current) => updateTask(current, event.task))
+        break
+      case 'TASK_DELETED':
+        setTaskList((current) => removeTask(current, event.task.id))
+        break
+      default:
+        // Ignore event types this client does not know yet.
+        break
+    }
+  }, [])
+
+  // Anything broadcast while the socket was down was missed, so each
+  // (re)connect re-reads the board. This also covers the gap between the
+  // first REST fetch and the socket opening.
+  const resync = useCallback(async () => {
+    try {
+      setTaskList(await tasksApi.list(id))
+    } catch (err) {
+      setError(errorMessage(err))
+    }
+  }, [id])
+
+  const { status: liveStatus, retry: retryLive } = useWorkspaceSocket(id, {
+    onEvent: handleEvent,
+    onConnected: resync,
+    onLostAccess: () => setError('You are no longer a member of this workspace.'),
+  })
+
   const namesByUserId = useMemo(() => {
     const map = new Map()
     for (const member of workspace?.members ?? []) map.set(member.user_id, displayName(member.email))
@@ -70,7 +124,7 @@ export default function Workspace() {
   const openTask = taskList.find((t) => t.id === openTaskId) ?? null
 
   function replaceTask(updated) {
-    setTaskList((current) => current.map((t) => (t.id === updated.id ? updated : t)))
+    setTaskList((current) => updateTask(current, updated))
   }
 
   async function handleCreate(event, status) {
@@ -79,7 +133,7 @@ export default function Workspace() {
     if (!title) return
     try {
       const created = await tasksApi.create(id, { title, status })
-      setTaskList((current) => [...current, created])
+      setTaskList((current) => addTask(current, created))
       setNewTitle('')
       setComposing(null)
     } catch (err) {
@@ -91,12 +145,15 @@ export default function Workspace() {
     if (task.status === status) return
     // Show the card in its new column straight away; the server decides the
     // final position and we reconcile when it answers.
-    const previous = taskList
     setTaskList((current) => current.map((t) => (t.id === task.id ? { ...t, status } : t)))
     try {
       replaceTask(await tasksApi.update(task.id, { status }))
     } catch (err) {
-      setTaskList(previous)
+      // Undo only our optimistic move. Restoring a whole-list snapshot would
+      // also throw away anything that arrived over the socket meanwhile.
+      setTaskList((current) =>
+        current.map((t) => (t.id === task.id && t.version === task.version ? task : t)),
+      )
       setError(errorMessage(err))
     }
   }
@@ -119,7 +176,7 @@ export default function Workspace() {
     setDetailError(null)
     try {
       await tasksApi.remove(openTaskId)
-      setTaskList((current) => current.filter((t) => t.id !== openTaskId))
+      setTaskList((current) => removeTask(current, openTaskId))
       setOpenTaskId(null)
     } catch (err) {
       setDetailError(errorMessage(err))
@@ -163,7 +220,10 @@ export default function Workspace() {
             you are {workspace.my_role}
           </p>
         </div>
-        <button type="button" className="btn btn-quiet" onClick={load}>Refresh</button>
+        <div className="board-actions">
+          <ConnectionStatus status={liveStatus} onRetry={retryLive} />
+          <button type="button" className="btn btn-quiet" onClick={load}>Refresh</button>
+        </div>
       </div>
 
       {error && <p className="alert" role="alert">{error}</p>}

@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { STATUSES, statusLabel } from '../constants.js'
 
 /**
@@ -22,13 +22,33 @@ export default function TaskDetail({
   const [commentBody, setCommentBody] = useState('')
   const [confirmingDelete, setConfirmingDelete] = useState(false)
 
-  // Re-sync when a different card is opened, or when a save returns fresh data.
+  // Re-sync the form when the task changes: a different card was opened, our
+  // own save came back, or someone else's edit arrived over the socket. In
+  // that last case, an edit in progress here is kept rather than wiped out.
+  const shown = useRef(task)
   useEffect(() => {
-    setTitle(task.title)
-    setDescription(task.description ?? '')
-    setStatus(task.status)
-    setConfirmingDelete(false)
-  }, [task.id, task.title, task.description, task.status])
+    const before = shown.current
+    shown.current = task
+    if (before === task) return
+
+    const untouched =
+      title === before.title &&
+      description === (before.description ?? '') &&
+      status === before.status
+    // What Save sends, after trimming: matching it means this is our save returning.
+    const justSaved =
+      title.trim() === task.title &&
+      (description.trim() || null) === task.description &&
+      status === task.status
+
+    if (task.id !== before.id || untouched || justSaved) {
+      setTitle(task.title)
+      setDescription(task.description ?? '')
+      setStatus(task.status)
+    }
+    if (task.id !== before.id) setConfirmingDelete(false)
+    // Reads the form fields but must run only when the task changes.
+  }, [task])
 
   useEffect(() => {
     function onKey(event) {

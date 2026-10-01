@@ -25,6 +25,36 @@ def _unauthorized(detail: str) -> HTTPException:
     )
 
 
+class InvalidTokenError(Exception):
+    """The token does not identify a current user. ``str(exc)`` says why."""
+
+
+def user_from_token(db: Session, token: str) -> User:
+    """The user a bearer token belongs to, or ``InvalidTokenError``.
+
+    Shared by the REST dependency below and the WebSocket handshake, so both
+    accept exactly the same tokens.
+    """
+    try:
+        payload = decode_access_token(token)
+    except jwt.ExpiredSignatureError:
+        raise InvalidTokenError("Token has expired") from None
+    except jwt.PyJWTError:
+        raise InvalidTokenError("Could not validate credentials") from None
+
+    try:
+        user_id = int(payload["sub"])
+    except (KeyError, TypeError, ValueError):
+        raise InvalidTokenError("Could not validate credentials") from None
+
+    user = get_user_by_id(db, user_id)
+    if user is None:
+        # Signature was valid but the account is gone — the token outlived it.
+        raise InvalidTokenError("User no longer exists")
+
+    return user
+
+
 def get_current_user(
     credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(bearer_scheme)],
     db: Annotated[Session, Depends(get_db)],
@@ -33,23 +63,9 @@ def get_current_user(
         raise _unauthorized("Not authenticated")
 
     try:
-        payload = decode_access_token(credentials.credentials)
-    except jwt.ExpiredSignatureError:
-        raise _unauthorized("Token has expired") from None
-    except jwt.PyJWTError:
-        raise _unauthorized("Could not validate credentials") from None
-
-    try:
-        user_id = int(payload["sub"])
-    except (KeyError, TypeError, ValueError):
-        raise _unauthorized("Could not validate credentials") from None
-
-    user = get_user_by_id(db, user_id)
-    if user is None:
-        # Signature was valid but the account is gone — the token outlived it.
-        raise _unauthorized("User no longer exists")
-
-    return user
+        return user_from_token(db, credentials.credentials)
+    except InvalidTokenError as exc:
+        raise _unauthorized(str(exc)) from None
 
 
 CurrentUser = Annotated[User, Depends(get_current_user)]
