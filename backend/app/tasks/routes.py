@@ -1,6 +1,7 @@
 from typing import Annotated
 
-from fastapi import APIRouter, BackgroundTasks, Depends, Response, status
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Response, status
+from fastapi.responses import JSONResponse
 from sqlalchemy.orm import Session
 
 from app.auth.dependencies import CurrentUser
@@ -8,7 +9,7 @@ from app.database import get_db
 from app.realtime.events import EventType, queue_broadcast, task_event
 from app.tasks import service
 from app.tasks.dependencies import CurrentTask
-from app.tasks.schemas import TaskCreate, TaskResponse, TaskUpdate
+from app.tasks.schemas import TaskConflictResponse, TaskCreate, TaskResponse, TaskUpdate
 from app.workspaces.dependencies import CurrentMembership
 
 DbSession = Annotated[Session, Depends(get_db)]
@@ -52,13 +53,33 @@ def create_task(
     return response
 
 
-@tasks_router.patch("/{task_id}", response_model=TaskResponse)
+@tasks_router.patch(
+    "/{task_id}",
+    response_model=TaskResponse,
+    responses={status.HTTP_409_CONFLICT: {"model": TaskConflictResponse}},
+)
 def update_task(
     payload: TaskUpdate, task: CurrentTask, db: DbSession, background: BackgroundTasks
-) -> TaskResponse:
-    """Partial update. Any member of the workspace may edit any task in it."""
-    changes = payload.model_dump(exclude_unset=True)
-    response = TaskResponse.model_validate(service.update_task(db, task, changes))
+) -> TaskResponse | JSONResponse:
+    """Partial update, applied only if the task is still at ``expected_version``.
+
+    Any member of the workspace may edit any task in it. A stale
+    ``expected_version`` is a 409 whose body carries the current task, so the
+    client can show what changed. Nothing is written and nothing is broadcast.
+    """
+    changes = payload.model_dump(exclude_unset=True, exclude={"expected_version"})
+    try:
+        updated = service.update_task(db, task, changes, payload.expected_version)
+    except service.VersionConflictError as conflict:
+        body = TaskConflictResponse(
+            detail="This task was updated by someone else.",
+            current_task=TaskResponse.model_validate(conflict.current),
+        )
+        return JSONResponse(status_code=status.HTTP_409_CONFLICT, content=body.model_dump(mode="json"))
+    except service.TaskGoneError:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Task not found.") from None
+
+    response = TaskResponse.model_validate(updated)
     # An empty body changes nothing and commits nothing, so there is no news.
     if changes:
         queue_broadcast(background, task.workspace_id, task_event(EventType.TASK_UPDATED, response))

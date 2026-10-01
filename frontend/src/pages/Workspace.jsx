@@ -1,7 +1,8 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Link, useParams } from 'react-router-dom'
 import {
   comments as commentsApi,
+  conflictTask,
   errorMessage,
   tasks as tasksApi,
   workspaces as workspacesApi,
@@ -21,6 +22,9 @@ function displayName(email) {
 // and via the broadcast of it, in either order. Every write to the list goes
 // through these, so a task is never added twice and an older version never
 // overwrites a newer one.
+const CONFLICT_MESSAGE =
+  'This task was updated by someone else — showing the latest version. Your change was not saved.'
+
 function addTask(list, task) {
   return list.some((t) => t.id === task.id) ? list : [...list, task]
 }
@@ -190,31 +194,46 @@ export default function Workspace() {
     }
   }
 
+  // Cards with a move still in flight. A second move would quote the version
+  // the first is about to replace and be refused as a conflict with ourselves.
+  const movingIds = useRef(new Set())
+
   async function handleMove(task, status) {
-    if (task.status === status) return
+    if (task.status === status || movingIds.current.has(task.id)) return
+    movingIds.current.add(task.id)
     // Show the card in its new column straight away; the server decides the
     // final position and we reconcile when it answers.
     setTaskList((current) => current.map((t) => (t.id === task.id ? { ...t, status } : t)))
     try {
-      replaceTask(await tasksApi.update(task.id, { status }))
+      replaceTask(await tasksApi.update(task.id, { status }, task.version))
     } catch (err) {
       // Undo only our optimistic move. Restoring a whole-list snapshot would
       // also throw away anything that arrived over the socket meanwhile.
       setTaskList((current) =>
         current.map((t) => (t.id === task.id && t.version === task.version ? task : t)),
       )
-      setError(errorMessage(err))
+      const current = conflictTask(err)
+      if (current) replaceTask(current)
+      setError(current ? CONFLICT_MESSAGE : errorMessage(err))
+    } finally {
+      movingIds.current.delete(task.id)
     }
   }
 
-  async function handleSave(changes) {
-    if (Object.keys(changes).length === 0) return
+  // Resolves to the current task if the save was refused as outdated, so the
+  // form can show it; otherwise null.
+  async function handleSave(changes, expectedVersion) {
+    if (Object.keys(changes).length === 0) return null
     setDetailBusy(true)
     setDetailError(null)
     try {
-      replaceTask(await tasksApi.update(openTaskId, changes))
+      replaceTask(await tasksApi.update(openTaskId, changes, expectedVersion))
+      return null
     } catch (err) {
-      setDetailError(errorMessage(err))
+      const current = conflictTask(err)
+      if (current) replaceTask(current)
+      setDetailError(current ? CONFLICT_MESSAGE : errorMessage(err))
+      return current
     } finally {
       setDetailBusy(false)
     }

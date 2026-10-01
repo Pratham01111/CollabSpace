@@ -103,6 +103,10 @@ label { font-size: 0.85rem; font-weight: 500; margin-top: 0.75rem; display: bloc
   font-size: 0.875rem;
   margin: 0.75rem 0 0;
 }
+.notice {
+  margin: 0.5rem 0; padding: 0.5rem 0.75rem; border-radius: 6px; font-size: 0.85rem;
+  background: #fffbeb; border: 1px solid #fde68a; color: #92400e;
+}
 
 .inline-form { display: flex; gap: 0.5rem; align-items: center; flex-wrap: wrap; margin-bottom: 1rem; }
 .inline-form input { flex: 1; min-width: 12rem; }

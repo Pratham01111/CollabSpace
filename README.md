@@ -11,6 +11,7 @@ A real-time collaborative workspace. Built in phases.
 - **Phase 7 — WebSockets:** an authenticated per-workspace connection, tracked server-side.
 - **Phase 8 — Real-time sync:** task create/update/delete pushed to every open board, with reconnection.
 - **Phase 9 — Comments:** persisted task comments, delivered live.
+- **Phase 10 — Concurrency:** version-checked task updates; a stale edit is a 409, never a silent overwrite.
 
 ## Database
 
@@ -132,7 +133,7 @@ indistinguishable from the outside.
 | --- | --- |
 | `GET /workspaces/{id}/tasks` | members only; ordered by status then position |
 | `POST /workspaces/{id}/tasks` | members only; `created_by` comes from the token |
-| `PATCH /tasks/{id}` | partial update; any member of the task's workspace |
+| `PATCH /tasks/{id}` | partial update; any member of the task's workspace; requires `expected_version` |
 | `DELETE /tasks/{id}` | any member of the task's workspace |
 
 Statuses are `TODO`, `IN_PROGRESS`, `DONE`. A task in a workspace the caller does
@@ -149,8 +150,29 @@ below it.
 Sending any of them in a request body is a 422 rather than a silent no-op, so a
 client bug surfaces immediately.
 
-`version` increments on every update that changes something. Nothing checks it
-yet — the 409-on-stale-write comparison arrives in Phase 10.
+#### Optimistic concurrency
+
+Every `PATCH /tasks/{id}` must include `expected_version`, the version the client
+last saw:
+
+```bash
+curl -X PATCH localhost:8000/tasks/42 -H "Authorization: Bearer $TOKEN" \
+  -H 'Content-Type: application/json' -d '{"status":"DONE","expected_version":4}'
+```
+
+- If the task is still at that version, the update applies, `version` goes up by
+  one (4 → 5), and `TASK_UPDATED` is broadcast.
+- If the task has moved on, the response is **409** and nothing is written or
+  broadcast. The body carries the task as it is now:
+  `{"detail": "This task was updated by someone else.", "current_task": {...}}`.
+
+The check is part of the write itself:
+`UPDATE tasks ... WHERE id = :id AND version = :expected_version`. A plain
+read-compare-write would let two simultaneous requests both pass the comparison,
+and the second write would overwrite the first. Postgres instead makes the second
+`UPDATE` wait for the first to commit and then re-check its `WHERE`, which no
+longer matches, so it becomes a 409. An empty update quoting the current version
+is a 200 that changes nothing.
 
 Passwords are hashed with bcrypt and never stored or returned in plaintext.
 Tokens are HS256, expire after `ACCESS_TOKEN_EXPIRE_MINUTES`, and carry only the
@@ -224,6 +246,19 @@ A user may have several sockets open on one workspace (say, two tabs), and all o
 them receive events. Connections are held in process memory, so this works only
 with a single worker.
 
+### Tests
+
+```bash
+cd backend
+pytest
+```
+
+The tests need the Postgres from `docker compose up -d`. They run against a
+separate `<database>_test` database, created on first run, rebuilt each session
+and emptied after every test, so development data is never touched. The
+concurrency tests rely on real Postgres row locking, so they cannot run on
+SQLite.
+
 ## Frontend
 
 ```bash
@@ -269,6 +304,15 @@ attempts) and then shows Offline with a Retry button. Losing the network shows
 Offline straight away and reconnects as soon as it is back. Events sent while
 disconnected are lost, so every reconnect re-reads the task list once. A rejected
 token logs you out, and removal from the workspace stops retrying.
+
+Edits carry the version they were based on. That is the version the form was
+loaded with, not the live one, so an edit started before someone else's save is
+refused rather than quietly overwriting it. While that is the case, the form warns
+that saving will be refused. On a 409 the board and the open form switch to the
+task as the server returned it, with *"This task was updated by someone else —
+showing the latest version."* Nothing is merged, so you redo your edit on top of
+the latest version if you still want it. A dragged card cannot be moved again
+until its first move has answered, so you never conflict with yourself.
 
 Opening a task loads its comment thread, and posting goes through the API. A
 `COMMENT_CREATED` for the open task is appended live; one for another task is

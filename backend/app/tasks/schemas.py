@@ -26,7 +26,8 @@ class TaskCreate(BaseModel):
 
 
 class TaskUpdate(BaseModel):
-    """Every field optional — only what is sent gets changed.
+    """Every field optional — only what is sent gets changed — except
+    ``expected_version``, which every update must carry.
 
     ``description`` is genuinely nullable, so sending ``null`` clears it while
     omitting the key leaves it alone.
@@ -34,6 +35,9 @@ class TaskUpdate(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
+    # The version the client last saw. The update applies only if the task is
+    # still at that version; otherwise it is a 409 carrying the current task.
+    expected_version: int = Field(ge=1)
     title: str | None = Field(default=None, min_length=1, max_length=255)
     description: str | None = None
     status: TaskStatus | None = None
@@ -63,3 +67,11 @@ class TaskResponse(BaseModel):
     version: int
     created_at: datetime
     updated_at: datetime
+
+
+class TaskConflictResponse(BaseModel):
+    """409 body: the edit was based on an old version, so here is the task as
+    it stands now. Nothing was changed."""
+
+    detail: str
+    current_task: TaskResponse

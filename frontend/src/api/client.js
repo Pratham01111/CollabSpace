@@ -71,6 +71,15 @@ export function errorMessage(error, fallback = 'Something went wrong.') {
   return error?.message ?? fallback
 }
 
+/**
+ * The task as it currently stands if `error` is a version conflict (409) from
+ * a task update, else null. The server sends it so the client can show the
+ * latest state instead of the edit it refused.
+ */
+export function conflictTask(error) {
+  return error?.response?.status === 409 ? (error.response.data?.current_task ?? null) : null
+}
+
 export async function getHealth() {
   const { data } = await api.get('/health')
   return data
@@ -121,8 +130,12 @@ export const tasks = {
     const { data } = await api.post(`/workspaces/${workspaceId}/tasks`, payload)
     return data
   },
-  async update(taskId, changes) {
-    const { data } = await api.patch(`/tasks/${taskId}`, changes)
+  /** Applies only if the task is still at `expectedVersion`; see conflictTask(). */
+  async update(taskId, changes, expectedVersion) {
+    const { data } = await api.patch(`/tasks/${taskId}`, {
+      ...changes,
+      expected_version: expectedVersion,
+    })
     return data
   },
   async remove(taskId) {

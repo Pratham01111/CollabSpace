@@ -26,6 +26,17 @@ export default function TaskDetail({
   const [posting, setPosting] = useState(false)
   const [postError, setPostError] = useState(null)
   const [confirmingDelete, setConfirmingDelete] = useState(false)
+  // The version the form's contents are based on, sent as expected_version.
+  // Not simply task.version: the task updates live, and quoting the newest
+  // version for an edit begun on an older one would overwrite unseen changes.
+  const [baseVersion, setBaseVersion] = useState(task.version)
+
+  function showTask(t) {
+    setTitle(t.title)
+    setDescription(t.description ?? '')
+    setStatus(t.status)
+    setBaseVersion(t.version)
+  }
 
   // Re-sync the form when the task changes: a different card was opened, our
   // own save came back, or someone else's edit arrived over the socket. In
@@ -46,11 +57,7 @@ export default function TaskDetail({
       (description.trim() || null) === task.description &&
       status === task.status
 
-    if (task.id !== before.id || untouched || justSaved) {
-      setTitle(task.title)
-      setDescription(task.description ?? '')
-      setStatus(task.status)
-    }
+    if (task.id !== before.id || untouched || justSaved) showTask(task)
     if (task.id !== before.id) {
       setConfirmingDelete(false)
       setCommentBody('')
@@ -69,15 +76,21 @@ export default function TaskDetail({
 
   const dirty =
     title !== task.title || description !== (task.description ?? '') || status !== task.status
+  // Someone else's save landed while this form held unsaved edits.
+  const outdated = dirty && task.version !== baseVersion
 
-  function handleSave(event) {
+  async function handleSave(event) {
     event.preventDefault()
     const changes = {}
     if (title !== task.title) changes.title = title.trim()
     // An emptied box means "no description", which the API models as null.
     if (description !== (task.description ?? '')) changes.description = description.trim() || null
     if (status !== task.status) changes.status = status
-    onSave(changes)
+
+    const conflict = await onSave(changes, baseVersion)
+    // Refused: show the task as it now is. No merging; the user redoes their
+    // edit on top of it if they still want it.
+    if (conflict) showTask(conflict)
   }
 
   async function handleAddComment(event) {
@@ -159,6 +172,11 @@ export default function TaskDetail({
             </div>
           </dl>
 
+          {outdated && !error && (
+            <p className="notice" role="status">
+              Someone else changed this task while you were editing. Saving now will be refused.
+            </p>
+          )}
           {error && <p className="alert" role="alert">{error}</p>}
 
           <div className="modal-actions">
