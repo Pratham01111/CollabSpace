@@ -1,5 +1,7 @@
 # CollabSpace
 
+[![CI](https://github.com/Pratham01111/CollabSpace/actions/workflows/ci.yml/badge.svg)](https://github.com/Pratham01111/CollabSpace/actions/workflows/ci.yml)
+
 A real-time collaborative workspace. Built in phases.
 
 ## Quick start (Docker)
@@ -386,6 +388,19 @@ SQLite.
 The app under test runs with Redis switched off. The event-bus tests start two
 buses with separate connection managers, standing in for two servers, against
 the real Redis, and are skipped if it is not running.
+
+### Continuous integration
+
+`.github/workflows/ci.yml` runs on every push and pull request, as two parallel
+jobs. Either one failing fails the run.
+
+- **Backend tests:** Python 3.14, with Postgres 17 and Redis 7 as service
+  containers. Installs `requirements.txt` + `requirements-dev.txt`, runs
+  `alembic upgrade head` against the test database, then `pytest`. The JWT
+  secret is generated fresh for each run rather than committed.
+- **Frontend build:** Node 22, `npm ci`, `npm run build`.
+
+Nothing is deployed.
 
 ## Frontend
 
