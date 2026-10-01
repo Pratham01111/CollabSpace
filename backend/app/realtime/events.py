@@ -19,6 +19,7 @@ class EventType(StrEnum):
     TASK_CREATED = "TASK_CREATED"
     TASK_UPDATED = "TASK_UPDATED"
     TASK_DELETED = "TASK_DELETED"
+    COMMENT_CREATED = "COMMENT_CREATED"
 
 
 def task_event(event_type: EventType, task: Task | TaskResponse) -> dict:

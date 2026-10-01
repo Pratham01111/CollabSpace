@@ -129,3 +129,14 @@ export const tasks = {
     await api.delete(`/tasks/${taskId}`)
   },
 }
+
+export const comments = {
+  async list(taskId) {
+    const { data } = await api.get(`/tasks/${taskId}/comments`)
+    return data
+  },
+  async create(taskId, body) {
+    const { data } = await api.post(`/tasks/${taskId}/comments`, { body })
+    return data
+  },
+}

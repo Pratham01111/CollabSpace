@@ -1,7 +1,11 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { Link, useParams } from 'react-router-dom'
-import { errorMessage, tasks as tasksApi, workspaces as workspacesApi } from '../api/client.js'
-import { useAuth } from '../context/AuthContext.jsx'
+import {
+  comments as commentsApi,
+  errorMessage,
+  tasks as tasksApi,
+  workspaces as workspacesApi,
+} from '../api/client.js'
 import { STATUSES, statusLabel } from '../constants.js'
 import ConnectionStatus from '../components/ConnectionStatus.jsx'
 import TaskCard from '../components/TaskCard.jsx'
@@ -31,9 +35,18 @@ function removeTask(list, taskId) {
   return list.filter((t) => t.id !== taskId)
 }
 
+// Comments arrive the same two ways (POST response and broadcast) and can also
+// race a thread fetch, so threads are merged by id, never appended blindly.
+function mergeComments(existing, incoming) {
+  const byId = new Map((existing ?? []).map((c) => [c.id, c]))
+  for (const comment of incoming) byId.set(comment.id, comment)
+  return [...byId.values()].sort(
+    (a, b) => Date.parse(a.created_at) - Date.parse(b.created_at) || a.id - b.id,
+  )
+}
+
 export default function Workspace() {
   const { id } = useParams()
-  const { user } = useAuth()
 
   const [workspace, setWorkspace] = useState(null)
   const [taskList, setTaskList] = useState([])
@@ -46,8 +59,13 @@ export default function Workspace() {
   const [draggingId, setDraggingId] = useState(null)
   const [composing, setComposing] = useState(null) // which column has its form open
   const [newTitle, setNewTitle] = useState('')
-  // Comments have no backend until Phase 9, so they live here for the session.
+  // Threads fetched so far, by task id. A live COMMENT_CREATED is only kept
+  // for a thread already here; any other is read fresh when its task opens.
   const [commentsByTask, setCommentsByTask] = useState({})
+  const [commentsLoading, setCommentsLoading] = useState(false)
+  const [commentsError, setCommentsError] = useState(null)
+  // Bumped on reconnect to re-read the open thread, which may have missed events.
+  const [commentsReload, setCommentsReload] = useState(0)
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -78,6 +96,15 @@ export default function Workspace() {
       case 'TASK_DELETED':
         setTaskList((current) => removeTask(current, event.task.id))
         break
+      case 'COMMENT_CREATED': {
+        const { comment } = event
+        setCommentsByTask((current) =>
+          comment.task_id in current
+            ? { ...current, [comment.task_id]: mergeComments(current[comment.task_id], [comment]) }
+            : current,
+        )
+        break
+      }
       default:
         // Ignore event types this client does not know yet.
         break
@@ -88,6 +115,7 @@ export default function Workspace() {
   // (re)connect re-reads the board. This also covers the gap between the
   // first REST fetch and the socket opening.
   const resync = useCallback(async () => {
+    setCommentsReload((n) => n + 1)
     try {
       setTaskList(await tasksApi.list(id))
     } catch (err) {
@@ -100,6 +128,27 @@ export default function Workspace() {
     onConnected: resync,
     onLostAccess: () => setError('You are no longer a member of this workspace.'),
   })
+
+  useEffect(() => {
+    if (openTaskId == null) return undefined
+    let cancelled = false
+    setCommentsLoading(true)
+    setCommentsError(null)
+    commentsApi
+      .list(openTaskId)
+      .then((list) => {
+        if (cancelled) return
+        setCommentsByTask((current) => ({
+          ...current,
+          [openTaskId]: mergeComments(current[openTaskId], list),
+        }))
+      })
+      .catch((err) => !cancelled && setCommentsError(errorMessage(err)))
+      .finally(() => !cancelled && setCommentsLoading(false))
+    return () => {
+      cancelled = true
+    }
+  }, [openTaskId, commentsReload])
 
   const namesByUserId = useMemo(() => {
     const map = new Map()
@@ -185,17 +234,14 @@ export default function Workspace() {
     }
   }
 
-  function handleAddComment(body) {
-    setCommentsByTask((current) => {
-      const existing = current[openTaskId] ?? []
-      const comment = {
-        id: `local-${Date.now()}`,
-        body,
-        author: displayName(user?.email),
-        created_at: new Date().toISOString(),
-      }
-      return { ...current, [openTaskId]: [...existing, comment] }
-    })
+  // Throws on failure so the form can keep the text and show why.
+  async function handleAddComment(body) {
+    const taskId = openTaskId
+    const created = await commentsApi.create(taskId, body)
+    setCommentsByTask((current) => ({
+      ...current,
+      [taskId]: mergeComments(current[taskId], [created]),
+    }))
   }
 
   if (loading) return <p className="muted centered">Loading workspace…</p>
@@ -319,7 +365,12 @@ export default function Workspace() {
         <TaskDetail
           task={openTask}
           authorName={authorFor(openTask)}
-          comments={commentsByTask[openTask.id] ?? []}
+          comments={(commentsByTask[openTask.id] ?? []).map((c) => ({
+            ...c,
+            authorName: displayName(c.author.email),
+          }))}
+          commentsLoading={commentsLoading}
+          commentsError={commentsError}
           onAddComment={handleAddComment}
           onSave={handleSave}
           onDelete={handleDelete}

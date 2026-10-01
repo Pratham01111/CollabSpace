@@ -10,6 +10,7 @@ A real-time collaborative workspace. Built in phases.
 - **Phase 6 — Frontend:** login, workspace dashboard, and a Kanban board. No WebSockets yet.
 - **Phase 7 — WebSockets:** an authenticated per-workspace connection, tracked server-side.
 - **Phase 8 — Real-time sync:** task create/update/delete pushed to every open board, with reconnection.
+- **Phase 9 — Comments:** persisted task comments, delivered live.
 
 ## Database
 
@@ -156,6 +157,22 @@ Tokens are HS256, expire after `ACCESS_TOKEN_EXPIRE_MINUTES`, and carry only the
 user id in `sub`. There is no refresh token or logout yet — a token is valid
 until it expires.
 
+### Comments
+
+| Endpoint | Notes |
+| --- | --- |
+| `GET /tasks/{id}/comments` | the thread, oldest first |
+| `POST /tasks/{id}/comments` | `{"body": "..."}` → 201 with the comment |
+
+```json
+{ "id": 7, "task_id": 42, "author": { "id": 3, "email": "bob@example.com" }, "body": "Looks good", "created_at": "..." }
+```
+
+The author always comes from the token, and sending `author` in the body is a
+422. The body is trimmed and must be 1 to 5000 characters. Access is the same
+check the task routes use: a task you cannot see is a 404 for its comments too.
+Comments are deleted along with their task.
+
 ### WebSockets
 
 `WS /ws/workspaces/{id}?token=<access_token>` opens a live channel to one workspace.
@@ -190,6 +207,7 @@ workspace, including the person who made it:
 | `TASK_CREATED` | `POST /workspaces/{id}/tasks` |
 | `TASK_UPDATED` | `PATCH /tasks/{id}` (not for an empty body, which changes nothing) |
 | `TASK_DELETED` | `DELETE /tasks/{id}`; `task` is the task as it was just before deletion |
+| `COMMENT_CREATED` | `POST /tasks/{id}/comments`; carries `comment` instead of `task` |
 
 `task` is exactly what the REST endpoint returns. Events are queued as background
 tasks only once the service call, which commits, has returned, and FastAPI runs
@@ -252,8 +270,10 @@ Offline straight away and reconnects as soon as it is back. Events sent while
 disconnected are lost, so every reconnect re-reads the task list once. A rejected
 token logs you out, and removal from the workspace stops retrying.
 
-Comments are **UI only** — they live in browser state and disappear on reload.
-The backend for them arrives in Phase 9, and the panel says so on screen.
+Opening a task loads its comment thread, and posting goes through the API. A
+`COMMENT_CREATED` for the open task is appended live; one for another task is
+picked up when that task is opened. The open thread is re-read on reconnect, like
+the board. If a post fails, the text stays in the box with the error beneath it.
 
 ### Guest mode (temporary)
 

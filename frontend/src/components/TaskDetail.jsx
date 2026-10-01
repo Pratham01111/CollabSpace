@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
+import { errorMessage } from '../api/client.js'
 import { STATUSES, statusLabel } from '../constants.js'
 
 /**
@@ -9,6 +10,8 @@ export default function TaskDetail({
   task,
   authorName,
   comments,
+  commentsLoading,
+  commentsError,
   onAddComment,
   onSave,
   onDelete,
@@ -20,6 +23,8 @@ export default function TaskDetail({
   const [description, setDescription] = useState(task.description ?? '')
   const [status, setStatus] = useState(task.status)
   const [commentBody, setCommentBody] = useState('')
+  const [posting, setPosting] = useState(false)
+  const [postError, setPostError] = useState(null)
   const [confirmingDelete, setConfirmingDelete] = useState(false)
 
   // Re-sync the form when the task changes: a different card was opened, our
@@ -46,7 +51,11 @@ export default function TaskDetail({
       setDescription(task.description ?? '')
       setStatus(task.status)
     }
-    if (task.id !== before.id) setConfirmingDelete(false)
+    if (task.id !== before.id) {
+      setConfirmingDelete(false)
+      setCommentBody('')
+      setPostError(null)
+    }
     // Reads the form fields but must run only when the task changes.
   }, [task])
 
@@ -71,11 +80,20 @@ export default function TaskDetail({
     onSave(changes)
   }
 
-  function handleAddComment(event) {
+  async function handleAddComment(event) {
     event.preventDefault()
     if (!commentBody.trim()) return
-    onAddComment(commentBody.trim())
-    setCommentBody('')
+    setPosting(true)
+    setPostError(null)
+    try {
+      await onAddComment(commentBody.trim())
+      setCommentBody('')
+    } catch (err) {
+      // Keep what they typed so a failed post costs nothing to retry.
+      setPostError(errorMessage(err))
+    } finally {
+      setPosting(false)
+    }
   }
 
   return (
@@ -176,16 +194,21 @@ export default function TaskDetail({
 
         <section className="comments">
           <h3>Comments</h3>
-          <p className="hint">
-            Not saved yet — these live in the browser until the comments API lands in Phase 9.
-          </p>
+
+          {commentsError && <p className="alert" role="alert">{commentsError}</p>}
 
           <ul className="comment-list">
-            {comments.length === 0 && <li className="muted">No comments yet.</li>}
+            {comments.length === 0 && (
+              <li className="muted">{commentsLoading ? 'Loading comments…' : 'No comments yet.'}</li>
+            )}
             {comments.map((comment) => (
               <li key={comment.id} className="comment">
                 <p className="comment-meta">
-                  {comment.author} · {new Date(comment.created_at).toLocaleTimeString()}
+                  {comment.authorName} ·{' '}
+                  {new Date(comment.created_at).toLocaleString(undefined, {
+                    dateStyle: 'medium',
+                    timeStyle: 'short',
+                  })}
                 </p>
                 <p>{comment.body}</p>
               </li>
@@ -196,12 +219,14 @@ export default function TaskDetail({
             <input
               value={commentBody}
               placeholder="Write a comment…"
+              maxLength={5000}
               onChange={(e) => setCommentBody(e.target.value)}
             />
-            <button type="submit" className="btn" disabled={!commentBody.trim()}>
-              Add
+            <button type="submit" className="btn" disabled={posting || !commentBody.trim()}>
+              {posting ? 'Posting…' : 'Add'}
             </button>
           </form>
+          {postError && <p className="alert" role="alert">{postError}</p>}
         </section>
       </div>
     </div>
