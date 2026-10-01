@@ -325,6 +325,23 @@ cd backend
 pytest
 ```
 
+About 180 tests, around 15s, organised by feature:
+
+| File | Covers |
+| --- | --- |
+| `test_auth.py` | register (duplicates, email and password rules), login (wrong password and unknown email are indistinguishable), and token rejection: missing, expired, wrong signature, `alg: none`, malformed, deleted user |
+| `test_authorization.py` | every workspace, task and comment endpoint returns 404 to an outsider, identical to a missing resource; each role can use the workspace; who may add and remove members, grant roles, and remove owners; the last owner rule |
+| `test_workspaces.py` | creating, listing and adding members (by email or id), plus the validation and error cases |
+| `test_tasks.py` | create, read, update and delete, column ordering, validation, server-owned fields |
+| `test_comments.py` | threads, author from the token, validation |
+| `test_websockets.py` | connect and reject (4401 / 4404), manager cleanup, events reaching clients, workspace isolation, failed requests broadcasting nothing |
+| `test_task_concurrency.py` | optimistic concurrency, including truly simultaneous writers |
+| `test_event_bus.py`, `test_presence.py` | Redis fan-out and presence across instances (skipped without Redis) |
+
+Every test leaves the app's connection manager empty; a fixture fails any test
+that leaks a socket. bcrypt runs at cost 4 under test, since nothing depends on
+the work factor and cost 12 made the suite take minutes.
+
 The tests need the Postgres from `docker compose up -d`. They run against a
 separate `<database>_test` database, created on first run, rebuilt each session
 and emptied after every test. `tests/conftest.py` points `DATABASE_URL` at it

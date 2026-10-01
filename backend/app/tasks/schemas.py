@@ -30,7 +30,8 @@ class TaskUpdate(BaseModel):
     ``expected_version``, which every update must carry.
 
     ``description`` is genuinely nullable, so sending ``null`` clears it while
-    omitting the key leaves it alone.
+    omitting the key leaves it alone. The other fields are optional but not
+    nullable: an explicit ``null`` for them is a 422, not a database error.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -43,11 +44,18 @@ class TaskUpdate(BaseModel):
     status: TaskStatus | None = None
     position: float | None = None
 
+    # Only runs for keys the client actually sent; an omitted field keeps its
+    # default without passing through here.
+    @field_validator("title", "status", "position")
+    @classmethod
+    def not_null(cls, value):
+        if value is None:
+            raise ValueError("May be omitted, but not null.")
+        return value
+
     @field_validator("title")
     @classmethod
-    def strip_title(cls, value: str | None) -> str | None:
-        if value is None:
-            return None
+    def strip_title(cls, value: str) -> str:
         value = value.strip()
         if not value:
             raise ValueError("Title must not be blank.")

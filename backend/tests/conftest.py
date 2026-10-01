@@ -9,9 +9,13 @@ reads the development values straight from the environment and ``.env``,
 without going through ``app.config``.
 """
 
+import functools
 import os
+import time
+from dataclasses import dataclass
 from pathlib import Path
 
+import bcrypt
 import pytest
 from dotenv import dotenv_values
 from sqlalchemy import create_engine, text
@@ -56,6 +60,13 @@ from fastapi.testclient import TestClient  # noqa: E402
 from app.database import Base, engine  # noqa: E402
 from app.database import models  # noqa: E402, F401  (registers every table)
 from app.main import app  # noqa: E402
+from app.auth.security import create_access_token  # noqa: E402
+from app.realtime.manager import manager  # noqa: E402
+
+# bcrypt's default cost (12) is deliberately slow, and nearly every test
+# registers several users. Cost 4 exercises the same code at a fraction of the
+# time; nothing here depends on the work factor.
+bcrypt.gensalt = functools.partial(bcrypt.gensalt, rounds=4)
 
 
 def _refuse_unless_test_database() -> None:
@@ -85,6 +96,20 @@ def clean_tables():
         conn.execute(text(f"TRUNCATE {tables} RESTART IDENTITY CASCADE"))
 
 
+@pytest.fixture(autouse=True)
+def no_leaked_sockets():
+    """Every test must leave the app's connection manager as it found it:
+    empty. A socket closes on the server a moment after the client lets go, so
+    allow it a second."""
+    yield
+    deadline = time.monotonic() + 1.0
+    while manager.connections and time.monotonic() < deadline:
+        time.sleep(0.01)
+    leaked = manager.connections
+    manager.connections = {}  # so one failure does not cascade into the next test
+    assert not leaked, f"sockets left registered after the test: {leaked}"
+
+
 @pytest.fixture
 def client():
     with TestClient(app) as c:
@@ -102,6 +127,73 @@ def register_and_login(client: TestClient, email: str) -> dict:
 @pytest.fixture
 def owner(client):
     return register_and_login(client, "owner@example.com")
+
+
+PASSWORD = "password123"
+
+
+@dataclass
+class Account:
+    id: int
+    email: str
+    token: str
+
+    @property
+    def headers(self) -> dict:
+        return {"Authorization": f"Bearer {self.token}"}
+
+
+@pytest.fixture
+def make_account(client):
+    """Register and log in a new user: ``make_account("alice")``."""
+
+    def make(name: str) -> Account:
+        email = f"{name}@example.com"
+        created = client.post("/auth/register", json={"email": email, "password": PASSWORD})
+        assert created.status_code == 201, created.text
+        # The same token /auth/login would issue. Login itself is covered in
+        # test_auth.py; going through it here would only add bcrypt time.
+        user_id = created.json()["id"]
+        return Account(id=user_id, email=email, token=create_access_token(user_id))
+
+    return make
+
+
+@dataclass
+class Team:
+    """A workspace with one account per role, plus someone outside it."""
+
+    workspace_id: int
+    owner: Account
+    admin: Account
+    member: Account
+    outsider: Account
+
+
+@pytest.fixture
+def team(client, make_account) -> Team:
+    owner, admin, member, outsider = (
+        make_account(n) for n in ("teamowner", "teamadmin", "teammember", "outsider")
+    )
+    workspace = client.post("/workspaces", json={"name": "Team"}, headers=owner.headers).json()
+    for account, role in ((admin, "ADMIN"), (member, "MEMBER")):
+        added = client.post(
+            f"/workspaces/{workspace['id']}/members",
+            json={"user_id": account.id, "role": role},
+            headers=owner.headers,
+        )
+        assert added.status_code == 201, added.text
+    return Team(workspace["id"], owner, admin, member, outsider)
+
+
+@pytest.fixture
+def team_task(client, team) -> dict:
+    """A task in the team's workspace, created by its owner."""
+    response = client.post(
+        f"/workspaces/{team.workspace_id}/tasks", json={"title": "Team task"}, headers=team.owner.headers
+    )
+    assert response.status_code == 201, response.text
+    return response.json()
 
 
 @pytest.fixture
