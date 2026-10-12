@@ -71,6 +71,10 @@ services:
       args:
         VITE_API_BASE_URL: /api
         VITE_ENABLE_GUEST: ${VITE_ENABLE_GUEST:-false}
+    environment:
+      # Where nginx proxies /api (WebSocket included). On Railway this is the
+      # backend's private-network address instead.
+      BACKEND_URL: http://backend:8000
     ports:
       - "${FRONTEND_PORT:-8080}:80"
     depends_on:

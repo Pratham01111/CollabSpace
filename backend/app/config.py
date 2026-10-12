@@ -1,5 +1,6 @@
 from functools import lru_cache
 
+from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -13,6 +14,21 @@ class Settings(BaseSettings):
     )
 
     database_url: str = "postgresql+psycopg://collabspace:collabspace@localhost:5432/collabspace"
+
+    @field_validator("database_url")
+    @classmethod
+    def use_psycopg_driver(cls, url: str) -> str:
+        """Accept the URLs hosting providers hand out.
+
+        Railway (and Heroku-style hosts) give ``postgresql://...`` or the older
+        ``postgres://...``. SQLAlchemy reads a bare ``postgresql://`` as the
+        psycopg2 driver, which is not installed, and does not know
+        ``postgres://`` at all, so both are pointed at psycopg (v3).
+        """
+        for prefix in ("postgres://", "postgresql://"):
+            if url.startswith(prefix):
+                return "postgresql+psycopg://" + url[len(prefix):]
+        return url
 
     # Pub/sub that fans realtime events out across backend instances. Set it
     # empty (REDIS_URL=) to run a single instance on in-memory delivery only.

@@ -23,7 +23,8 @@ USER app
 
 EXPOSE 8000
 
+# Follows PORT, so it still finds the server when a host assigns the port.
 HEALTHCHECK --interval=10s --timeout=3s --start-period=15s --retries=5 \
-  CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:8000/health', timeout=2)"
+  CMD python -c "import os, urllib.request; urllib.request.urlopen(f'http://localhost:{os.environ.get(\"PORT\", \"8000\")}/health', timeout=2)"
 
 ENTRYPOINT ["./docker-entrypoint.sh"]

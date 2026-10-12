@@ -245,6 +245,66 @@ If the Docker backend is also running, stop it first: `docker compose stop backe
 | `LOG_LEVEL` / `LOG_FORMAT` | `INFO` / `json` | `text` for readable local logs |
 | `VITE_API_BASE_URL` | `http://localhost:8000` | frontend build; `/api` in Docker |
 | `VITE_ENABLE_GUEST` | `false` | "Continue as guest" in production builds |
+| `PORT` | `8000` (backend), `80` (frontend) | port to listen on; hosts like Railway inject it |
+| `HOST` | `::` | backend bind address; `::` is dual-stack (all IPv4 and IPv6) |
+| `BACKEND_URL` | `http://backend:8000` | frontend nginx: where `/api` is proxied (WebSocket included) |
+
+## Deploying to Railway
+
+The stack runs on [Railway](https://railway.com) as four services: Postgres and
+Redis from Railway's templates, and the backend and frontend, each built from its
+own Dockerfile. Only the frontend needs a public URL. The browser talks to it,
+and its nginx proxies `/api`, WebSocket included, to the backend over Railway's
+private network.
+
+**What the repo does for Railway:**
+- **Ports:** both services listen on the `PORT` Railway injects. The backend binds
+  `::`, which is dual-stack: all IPv4 and IPv6. Railway's private network can be
+  IPv6-only.
+- **Database URL:** Railway's `postgresql://...` (or `postgres://...`) is accepted
+  as is and pointed at the psycopg driver.
+- **Migrations:** `alembic upgrade head` runs on every backend start, so the
+  schema is created on the first deploy and kept current after that.
+- **Proxy target:** the frontend's backend address comes from `BACKEND_URL`.
+  nginx resolves it per request through the container's DNS, so the frontend
+  starts even before the backend is up, and follows it across redeploys.
+- **Per-service config:** `backend/railway.json` and `frontend/railway.json` set
+  the Dockerfile builder, a health check, restart-on-failure, and watch paths, so
+  each service only redeploys when its own folder changes.
+
+| Service | Root directory | Config file | Health check |
+| --- | --- | --- | --- |
+| backend | `/backend` | `/backend/railway.json` | `/health` |
+| frontend | `/frontend` | `/frontend/railway.json` | `/` |
+
+Backend variables (`${{...}}` are Railway references, so type them literally):
+
+| Variable | Value |
+| --- | --- |
+| `DATABASE_URL` | `${{Postgres.DATABASE_URL}}` (the private URL, not `DATABASE_PUBLIC_URL`) |
+| `REDIS_URL` | `${{Redis.REDIS_URL}}` |
+| `JWT_SECRET_KEY` | a fresh secret: `python3 -c "import secrets; print(secrets.token_urlsafe(48))"` |
+| `PORT` | `8000`, fixed so the frontend knows which port to call |
+| `CORS_ORIGINS` | `https://${{frontend.RAILWAY_PUBLIC_DOMAIN}}` |
+| `WEB_CONCURRENCY` | `2` (optional; workers share state through Redis) |
+
+Frontend variables:
+
+| Variable | Value |
+| --- | --- |
+| `BACKEND_URL` | `http://${{backend.RAILWAY_PRIVATE_DOMAIN}}:${{backend.PORT}}` |
+
+**Notes:**
+- **Service names:** the references assume your services are named `Postgres`,
+  `Redis`, `backend` and `frontend`. If you name them differently, change the
+  part before the dot.
+- **CORS:** the app doesn't need CORS while the browser goes through the
+  frontend, but `CORS_ORIGINS` keeps direct API calls from the deployed site
+  working.
+- **Logs:** look for `Running upgrade` (the first deploy) and
+  `Uvicorn running on http://[::]:8000` in the backend logs. Every request is a
+  JSON line with a `request_id`, which also appears in the `X-Request-ID` response
+  header.
 
 ## Testing
 

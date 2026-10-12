@@ -1,17 +1,36 @@
 # Serves the built SPA and proxies the API, so the browser talks to a single
 # origin: no CORS, and nothing about the backend's address is baked into the JS.
+#
+# A template: the nginx image fills in ${...} from the environment at startup
+# (only variables that are set, so nginx's own $variables are left alone).
+#   PORT                   port to listen on (Railway injects it; 80 by default)
+#   BACKEND_URL            where the API lives, e.g. http://backend:8000 under
+#                          compose, http://<service>.railway.internal:8000 on Railway
+#   NGINX_LOCAL_RESOLVERS  this container's DNS server(s), filled in by the image
+
 server {
-    listen 80;
+    # IPv4 and IPv6: Railway's private network may be IPv6-only.
+    listen ${PORT};
+    listen [::]:${PORT};
     server_name _;
     root /usr/share/nginx/html;
 
-    # /api/... -> backend/... (the trailing slashes strip the /api prefix).
+    # Resolve the backend's name at request time, not once at startup, so
+    # nginx starts even if the backend is not up yet and follows it when its
+    # address changes on redeploy.
+    resolver ${NGINX_LOCAL_RESOLVERS} valid=10s;
+
+    # /api/... -> BACKEND_URL/...
     location /api/ {
-        proxy_pass http://backend:8000/;
+        set $backend_url "${BACKEND_URL}";
+        rewrite ^/api/(.*)$ /$1 break;
+        proxy_pass $backend_url;
+
         proxy_http_version 1.1;
-        proxy_set_header Host $host;
+        proxy_set_header Host $proxy_host;
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header X-Request-ID $request_id;
 
         # WebSocket upgrade for /api/ws/workspaces/{id}.
         proxy_set_header Upgrade $http_upgrade;
