@@ -46,6 +46,11 @@ services:
       ACCESS_TOKEN_EXPIRE_MINUTES: ${ACCESS_TOKEN_EXPIRE_MINUTES:-60}
       CORS_ORIGINS: ${CORS_ORIGINS:-}
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      # Connection pool, per worker process.
+      DB_POOL_SIZE: ${DB_POOL_SIZE:-5}
+      DB_MAX_OVERFLOW: ${DB_MAX_OVERFLOW:-10}
+      DB_POOL_TIMEOUT: ${DB_POOL_TIMEOUT:-10}
+      DB_POOL_RECYCLE: ${DB_POOL_RECYCLE:-1800}
       LOG_FORMAT: ${LOG_FORMAT:-json}
       # Worker processes. More than one is safe: they share state via Redis.
       WEB_CONCURRENCY: ${BACKEND_WORKERS:-2}

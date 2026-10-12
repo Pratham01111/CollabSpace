@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { Link, useParams } from 'react-router-dom'
+import { Link, useNavigate, useParams } from 'react-router-dom'
 import {
   comments as commentsApi,
   conflictTask,
@@ -7,8 +7,10 @@ import {
   tasks as tasksApi,
   workspaces as workspacesApi,
 } from '../api/client.js'
+import { useAuth } from '../context/AuthContext.jsx'
 import { STATUSES, statusLabel } from '../constants.js'
 import ConnectionStatus from '../components/ConnectionStatus.jsx'
+import MembersPanel from '../components/MembersPanel.jsx'
 import OnlineNow from '../components/OnlineNow.jsx'
 import { BoardSkeleton, ErrorState } from '../components/StatusViews.jsx'
 import TaskCard from '../components/TaskCard.jsx'
@@ -24,6 +26,8 @@ function displayName(email) {
 // and via the broadcast of it, in either order. Every write to the list goes
 // through these, so a task is never added twice and an older version never
 // overwrites a newer one.
+const LOST_ACCESS_MESSAGE = 'You are no longer a member of this workspace.'
+
 const CONFLICT_MESSAGE =
   'This task was updated by someone else — showing the latest version. Your change was not saved.'
 
@@ -53,6 +57,8 @@ function mergeComments(existing, incoming) {
 
 export default function Workspace() {
   const { id } = useParams()
+  const navigate = useNavigate()
+  const { user } = useAuth()
 
   const [workspace, setWorkspace] = useState(null)
   const [taskList, setTaskList] = useState([])
@@ -76,6 +82,11 @@ export default function Workspace() {
   // kept current by USER_JOINED / USER_LEFT. Ephemeral; the server never stores it.
   const [online, setOnline] = useState(() => new Map())
   const [myUserId, setMyUserId] = useState(null)
+  const [membersOpen, setMembersOpen] = useState(false)
+  const [membersRefreshing, setMembersRefreshing] = useState(false)
+  // Read inside the socket's event handler, which is created once.
+  const myIdRef = useRef(null)
+  myIdRef.current = user?.id ?? myUserId
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -94,6 +105,19 @@ export default function Workspace() {
   useEffect(() => {
     load()
   }, [load])
+
+  // Re-read the workspace (members and roles) without touching the board.
+  const refreshWorkspace = useCallback(async () => {
+    setMembersRefreshing(true)
+    try {
+      setWorkspace(await workspacesApi.get(id))
+    } catch (err) {
+      // A 404 here means we were just removed: say that, not "not found".
+      setError(err?.response?.status === 404 ? LOST_ACCESS_MESSAGE : errorMessage(err))
+    } finally {
+      setMembersRefreshing(false)
+    }
+  }, [id])
 
   const handleEvent = useCallback((event) => {
     switch (event.type) {
@@ -117,6 +141,17 @@ export default function Workspace() {
           return next
         })
         break
+      // Someone joined or left: refetch rather than patch, so roles, the
+      // member count and "Created by" names all come from one source.
+      case 'MEMBER_ADDED':
+        refreshWorkspace()
+        break
+      case 'MEMBER_REMOVED':
+        // If it is us, there is nothing left to refetch; the server is about
+        // to close our socket too.
+        if (event.user_id === myIdRef.current) setError(LOST_ACCESS_MESSAGE)
+        else refreshWorkspace()
+        break
       case 'COMMENT_CREATED': {
         const { comment } = event
         setCommentsByTask((current) =>
@@ -130,7 +165,7 @@ export default function Workspace() {
         // Ignore event types this client does not know yet.
         break
     }
-  }, [])
+  }, [refreshWorkspace])
 
   // Anything broadcast while the socket was down was missed, so each
   // (re)connect re-reads the board. This also covers the gap between the
@@ -149,7 +184,7 @@ export default function Workspace() {
   const { status: liveStatus, retry: retryLive } = useWorkspaceSocket(id, {
     onEvent: handleEvent,
     onConnected: resync,
-    onLostAccess: () => setError('You are no longer a member of this workspace.'),
+    onLostAccess: () => setError(LOST_ACCESS_MESSAGE),
   })
 
   useEffect(() => {
@@ -316,6 +351,9 @@ export default function Workspace() {
         </div>
         <div className="board-actions">
           <ConnectionStatus status={liveStatus} onRetry={retryLive} />
+          <button type="button" className="btn" onClick={() => setMembersOpen(true)}>
+            Members ({workspace.members.length})
+          </button>
           <button type="button" className="btn btn-quiet" onClick={load}>Refresh</button>
         </div>
       </div>
@@ -426,6 +464,19 @@ export default function Workspace() {
           </div>
         ))}
       </div>
+
+      {membersOpen && (
+        <MembersPanel
+          workspace={workspace}
+          myUserId={user?.id ?? myUserId}
+          online={online}
+          displayName={displayName}
+          refreshing={membersRefreshing}
+          onChanged={refreshWorkspace}
+          onLeft={() => navigate('/workspaces', { replace: true })}
+          onClose={() => setMembersOpen(false)}
+        />
+      )}
 
       {openTask && (
         <TaskDetail

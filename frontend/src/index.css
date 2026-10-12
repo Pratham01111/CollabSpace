@@ -66,6 +66,7 @@ body { margin: 0; }
   background: #fff; border: 1px solid var(--border); border-radius: 999px;
 }
 .presence-dot { width: 7px; height: 7px; border-radius: 50%; background: #16a34a; }
+.presence-dot.is-away { background: #d4d4d8; }
 .online-count { color: #15803d; }
 
 /* ---------- primitives ---------- */
@@ -221,6 +222,29 @@ label { font-size: 0.85rem; font-weight: 500; margin-top: 0.75rem; display: bloc
   .task-facts { grid-template-columns: 1fr 1fr; }
   .auth-wrap { padding-top: 1.5rem; }
 }
+
+/* ---------- members ---------- */
+.modal-head h2 { display: flex; align-items: center; gap: 0.4rem; }
+.member-list { list-style: none; margin: 1rem 0 0; padding: 0; display: grid; gap: 0.25rem; }
+.member-row {
+  display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap;
+  gap: 0.5rem; padding: 0.5rem 0; border-bottom: 1px solid var(--border);
+}
+.member-who { display: flex; align-items: center; gap: 0.5rem; min-width: 0; }
+.member-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.member-actions { display: flex; gap: 0.4rem; }
+.member-error { flex-basis: 100%; margin: 0; }
+.member-hint { margin-top: 1rem; }
+.add-member { margin-top: 1.25rem; }
+.add-member-row { display: flex; gap: 0.5rem; flex-wrap: wrap; margin-top: 0.35rem; }
+.add-member-row input { flex: 1 1 12rem; }
+.add-member-row select { width: auto; }
+.success {
+  margin: 0.5rem 0 0; padding: 0.5rem 0.75rem; border-radius: 6px; font-size: 0.85rem;
+  background: #f0fdf4; border: 1px solid #bbf7d0; color: #166534;
+}
+.leave-zone { margin-top: 1.5rem; padding-top: 1rem; border-top: 1px solid var(--border); }
+.leave-confirm span { font-size: 0.9rem; }
 
 /* ---------- loading / error / empty ---------- */
 .spinner-wrap { display: inline-flex; vertical-align: middle; }

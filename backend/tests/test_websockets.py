@@ -245,3 +245,53 @@ def test_rejected_requests_broadcast_nothing(client, team, team_task):
         assert_nothing_pending(ws)
     finally:
         ctx.__exit__(None, None, None)
+
+
+# ---- membership events ---------------------------------------------------------------
+
+
+def test_adding_a_member_is_broadcast(client, team, make_account):
+    newcomer = make_account("newcomer")
+    ctx, ws = connect(client, team.workspace_id, team.member)
+    try:
+        added = client.post(
+            f"/workspaces/{team.workspace_id}/members",
+            json={"email": newcomer.email, "role": "MEMBER"},
+            headers=team.owner.headers,
+        ).json()
+
+        event = ws.receive_json()
+        assert event == {"type": "MEMBER_ADDED", "member": added}
+        assert event["member"]["email"] == newcomer.email
+    finally:
+        ctx.__exit__(None, None, None)
+
+
+@pytest.mark.parametrize("how", ["removed", "left"])
+def test_member_leaving_or_removed_is_broadcast(client, team, how):
+    ctx, ws = connect(client, team.workspace_id, team.owner)
+    try:
+        if how == "removed":
+            client.delete(f"/workspaces/{team.workspace_id}/members/{team.member.id}", headers=team.owner.headers)
+        else:
+            client.delete(f"/workspaces/{team.workspace_id}/members/me", headers=team.member.headers)
+
+        assert ws.receive_json() == {"type": "MEMBER_REMOVED", "user_id": team.member.id}
+    finally:
+        ctx.__exit__(None, None, None)
+
+
+def test_refused_membership_changes_broadcast_nothing(client, team, make_account):
+    newcomer = make_account("newcomer")
+    ctx, ws = connect(client, team.workspace_id, team.member)
+    try:
+        members = f"/workspaces/{team.workspace_id}/members"
+        client.post(members, json={"email": "ghost@example.com"}, headers=team.owner.headers)  # 404
+        client.post(members, json={"email": team.admin.email}, headers=team.owner.headers)  # 409
+        client.post(members, json={"email": newcomer.email, "role": "ADMIN"}, headers=team.admin.headers)  # 403
+        client.delete(f"{members}/{team.owner.id}", headers=team.admin.headers)  # 403
+        client.delete(f"{members}/me", headers=team.owner.headers)  # 409, last owner
+
+        assert_nothing_pending(ws)
+    finally:
+        ctx.__exit__(None, None, None)

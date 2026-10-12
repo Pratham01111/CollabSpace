@@ -24,6 +24,9 @@ editing the same task at once never silently overwrite each other.
   with bcrypt, and sessions use JWT bearer tokens.
 - **Workspaces and roles:** OWNER, ADMIN and MEMBER, with rules for who may add or
   remove people and grant roles. A workspace always keeps at least one owner.
+- **Members panel:** on the board, list members with their roles and see who is
+  online. Owners and admins add people by email and remove them, within the role
+  rules. Anyone can leave. Every open board updates its member list live.
 - **Private by default:** a workspace you don't belong to, and everything in it,
   returns 404. A 403 would confirm that it exists.
 - **Kanban board:** TODO / IN PROGRESS / DONE. Create, edit, delete, and drag
@@ -42,7 +45,7 @@ editing the same task at once never silently overwrite each other.
 - **Production basics:** one error format everywhere, structured JSON logs with
   request ids, input bounds, a 503 when the database is down, and loading, error
   and empty states. The UI works at phone width.
-- **Tooling:** one-command Docker setup, about 210 backend tests, and CI on every
+- **Tooling:** one-command Docker setup, about 215 backend tests, and CI on every
   push.
 
 ## Tech Stack
@@ -170,6 +173,13 @@ writers: exactly one succeeds. They also fail if the version condition is remove
 
 ## Running Locally
 
+**Requirements**
+
+| Path | Needs |
+| --- | --- |
+| Docker | Docker with Compose v2 (`docker compose`). Nothing else: Python and Node run inside the images. |
+| Native development | Python **3.14** (3.11 is the minimum the code supports; the image and CI use 3.14), Node.js **22** (CI and the image use 22; 20 or later works with Vite 6), and Docker for Postgres and Redis. |
+
 ### Everything in Docker (recommended)
 
 ```bash
@@ -243,14 +253,14 @@ docker compose up -d postgres redis
 cd backend && pytest
 ```
 
-About 210 tests in about 15 seconds, organised by feature:
+About 215 tests in about 15 seconds, organised by feature:
 
 | File | Covers |
 | --- | --- |
 | `test_auth.py` | registration rules; wrong password and unknown email are indistinguishable; expired, forged, `alg: none`, malformed and missing tokens |
 | `test_authorization.py` | every workspace, task and comment endpoint returns 404 to outsiders, identical to a missing resource; role rules; the last-owner rule |
 | `test_workspaces.py`, `test_tasks.py`, `test_comments.py` | CRUD, validation, server-owned fields, ordering |
-| `test_websockets.py` | accept and reject (4401 / 4404), socket cleanup, events reaching clients, workspace isolation, failed requests broadcasting nothing |
+| `test_websockets.py` | accept and reject (4401 / 4404), socket cleanup, task, comment and membership events reaching clients, workspace isolation, failed requests broadcasting nothing |
 | `test_task_concurrency.py` | optimistic concurrency, including eight truly simultaneous writers |
 | `test_event_bus.py`, `test_presence.py` | fan-out and presence across two simulated servers on a real Redis |
 | `test_production.py` | error format, no input echo, id and number bounds, 500/503 handling, log contents, WebSocket edge cases |
@@ -368,6 +378,7 @@ query strings.
 | `TASK_CREATED` / `TASK_UPDATED` / `TASK_DELETED` | after a committed task write; `{task}` |
 | `COMMENT_CREATED` | after a committed comment; `{comment}` |
 | `USER_JOINED` / `USER_LEFT` | someone's first connection opens or last one closes; `{user}` |
+| `MEMBER_ADDED` / `MEMBER_REMOVED` | after a committed add, or a removal or leave; `{member}` / `{user_id}` |
 | `pong` | in reply to the text `ping` |
 
 | Close code | Meaning | Client behaviour |

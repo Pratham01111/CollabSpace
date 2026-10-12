@@ -124,6 +124,12 @@ export const workspaces = {
     const { data } = await api.post(`/workspaces/${id}/members`, body)
     return data
   },
+  async removeMember(id, userId) {
+    await api.delete(`/workspaces/${id}/members/${userId}`)
+  },
+  async leave(id) {
+    await api.delete(`/workspaces/${id}/members/me`)
+  },
 }
 
 export const tasks = {

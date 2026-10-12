@@ -29,6 +29,16 @@ export default function Dashboard() {
     load()
   }, [load])
 
+  // Being added to a workspace happens elsewhere; pick it up when the user
+  // comes back to this tab instead of waiting for a manual reload.
+  useEffect(() => {
+    function onVisible() {
+      if (document.visibilityState === 'visible') load()
+    }
+    document.addEventListener('visibilitychange', onVisible)
+    return () => document.removeEventListener('visibilitychange', onVisible)
+  }, [load])
+
   async function handleCreate(event) {
     event.preventDefault()
     setCreateError(null)

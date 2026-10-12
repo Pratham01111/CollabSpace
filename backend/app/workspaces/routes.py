@@ -9,6 +9,7 @@ from app.database import get_db
 from app.errors import error_docs
 from app.database.models import WorkspaceMember
 from app.realtime.bus import bus
+from app.realtime.events import EventType, queue_broadcast
 from app.validation import MAX_ID
 from app.realtime.manager import CLOSE_WORKSPACE_NOT_FOUND
 from app.workspaces import service
@@ -46,15 +47,16 @@ def _workspace_response(membership: WorkspaceMember) -> WorkspaceResponse:
     )
 
 
-def _disconnect_former_member(background: BackgroundTasks, workspace_id: int, user_id: int) -> None:
-    """Close the live sockets of someone who is no longer a member, or they
-    would keep receiving the workspace's events. Queued, so it only happens
-    once the removal has committed; sent via the bus, as their sockets may be
-    on another instance."""
+def _after_member_removed(background: BackgroundTasks, workspace_id: int, user_id: int) -> None:
+    """Tell the workspace someone has gone, then close that person's live
+    sockets, or they would keep receiving its events. Both are queued, so they
+    happen only once the removal has committed, and both go via the bus, as
+    sockets may be on another instance."""
     logger.info(
         "member left or removed",
         extra={"event": "workspace.member_removed", "workspace_id": workspace_id, "user_id": user_id},
     )
+    queue_broadcast(background, workspace_id, {"type": EventType.MEMBER_REMOVED, "user_id": user_id})
     background.add_task(
         bus.disconnect_user, workspace_id, user_id, CLOSE_WORKSPACE_NOT_FOUND, "Workspace not found."
     )
@@ -126,6 +128,7 @@ def add_member(
     payload: MemberAdd,
     actor: MembershipManager,
     db: DbSession,
+    background: BackgroundTasks,
 ) -> MemberResponse:
     """Add a user by `email` or `user_id` (exactly one), as MEMBER unless `role` says
     otherwise. Owners and admins only; granting ADMIN or OWNER takes an owner.
@@ -149,7 +152,21 @@ def add_member(
         raise HTTPException(status.HTTP_403_FORBIDDEN, str(exc)) from None
 
     db.refresh(membership, ["user"])
-    return _member_response(membership)
+    response = _member_response(membership)
+    logger.info(
+        "member added",
+        extra={
+            "event": "workspace.member_added",
+            "workspace_id": actor.workspace_id,
+            "user_id": response.user_id,
+        },
+    )
+    queue_broadcast(
+        background,
+        actor.workspace_id,
+        {"type": EventType.MEMBER_ADDED, "member": response.model_dump(mode="json")},
+    )
+    return response
 
 
 # Registered before the /{user_id} route below on purpose. Route matching is
@@ -173,7 +190,7 @@ def leave_workspace(
             "You are the last owner. Promote another member to owner before leaving.",
         ) from None
 
-    _disconnect_former_member(background, membership.workspace_id, membership.user_id)
+    _after_member_removed(background, membership.workspace_id, membership.user_id)
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
@@ -211,5 +228,5 @@ def remove_member(
             "Cannot remove the last owner. Promote another member to owner first.",
         ) from None
 
-    _disconnect_former_member(background, actor.workspace_id, user_id)
+    _after_member_removed(background, actor.workspace_id, user_id)
     return Response(status_code=status.HTTP_204_NO_CONTENT)

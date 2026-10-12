@@ -20,6 +20,10 @@ class EventType(StrEnum):
     TASK_UPDATED = "TASK_UPDATED"
     TASK_DELETED = "TASK_DELETED"
     COMMENT_CREATED = "COMMENT_CREATED"
+    # Membership changes, so open boards keep their member list (roles, and
+    # the names shown as "Created by") current without a reload.
+    MEMBER_ADDED = "MEMBER_ADDED"
+    MEMBER_REMOVED = "MEMBER_REMOVED"
 
 
 def task_event(event_type: EventType, task: Task | TaskResponse) -> dict:
