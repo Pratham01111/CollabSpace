@@ -8,7 +8,9 @@ editing the same task at once never silently overwrite each other.
 
 ## Live Demo
 
-> _Coming soon — link to the deployed app._
+https://frontend-production-3e11.up.railway.app
+
+Hosted on Railway: frontend, backend, Postgres and Redis, each as its own service.
 
 ## Screenshots
 
