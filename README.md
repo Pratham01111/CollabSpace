@@ -14,11 +14,14 @@ Hosted on Railway: frontend, backend, Postgres and Redis, each as its own servic
 
 ## Screenshots
 
-> _Coming soon._
->
-> | Board | Task detail | Mobile |
-> | --- | --- | --- |
-> | `docs/screenshots/board.png` | `docs/screenshots/task.png` | `docs/screenshots/mobile.png` |
+Two users on the same board at the same time, each shown as online to the other.
+
+| Owner | Second user |
+| --- | --- |
+| ![Light board, owner's view](docs/screenshots/board-light.png) | ![Light board, second user's view](docs/screenshots/board-light-member.png) |
+| ![Dark board, owner's view](docs/screenshots/board-dark.png) | ![Dark board, second user's view](docs/screenshots/board-dark-member.png) |
+
+![Task details with status picker and comments](docs/screenshots/task-modal.png)
 
 ## Features
 
