@@ -4,6 +4,26 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>CollabSpace</title>
+    <!-- Theme before first paint: the saved choice, else the OS preference.
+         Mirrors src/theme.js; runs before any CSS or JS so nothing flashes. -->
+    <script>
+      (function () {
+        var theme = null;
+        try {
+          theme = localStorage.getItem('collabspace.theme');
+        } catch (e) {}
+        if (theme !== 'light' && theme !== 'dark') {
+          var dark = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches;
+          theme = dark ? 'dark' : 'light';
+        }
+        document.documentElement.setAttribute('data-theme', theme);
+      })();
+    </script>
+    <!-- Page background before the stylesheet arrives (it is injected by JS in dev). -->
+    <style>
+      html { background: #f7f7f8; }
+      html[data-theme='dark'] { background: #0c0e13; color-scheme: dark; }
+    </style>
   </head>
   <body>
     <div id="root"></div>

@@ -2,6 +2,7 @@ import { Link, Outlet, useLocation } from 'react-router-dom'
 import { useAuth } from '../context/AuthContext.jsx'
 import BackendStatus from './BackendStatus.jsx'
 import ErrorBoundary from './ErrorBoundary.jsx'
+import ThemeToggle from './ThemeToggle.jsx'
 
 export default function Layout() {
   const { user, logout, isAuthenticated, isGuest } = useAuth()
@@ -23,6 +24,7 @@ export default function Layout() {
               </button>
             </>
           )}
+          <ThemeToggle />
         </div>
       </header>
       {isGuest && (
